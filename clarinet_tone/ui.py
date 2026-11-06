@@ -5,7 +5,8 @@ import time
 from datetime import date, datetime
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer, QDate
+from PySide6.QtCore import Qt, QTimer, QDate, QObject, Signal
+import threading
 from PySide6.QtGui import QColor, QFont, QPainter
 from PySide6.QtWidgets import (
     QApplication, QButtonGroup, QComboBox, QDateEdit, QDialog, QDialogButtonBox,
@@ -121,7 +122,7 @@ class MainWindow(QMainWindow):
 
         root = QWidget()
         v = QVBoxLayout(root)
-        v.setSpacing(12)
+        v.setSpacing(6)
 
         # microphone
         self.mic_label = QLabel()
@@ -515,6 +516,30 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.warning(self, "Folder", f"Could not open {d}:\n{e}")
 
+    def start_update_check(self):
+        """At startup, look for a newer build in the background; ask only if one exists."""
+        if not U.current_build():
+            return          # running from source, not a GitHub build
+
+        class Relay(QObject):
+            found = Signal(int)
+        self._relay = Relay()
+        self._relay.found.connect(self._offer_update)
+
+        def work():
+            try:
+                latest, _ = U.latest_release()
+            except Exception:
+                return      # no internet: say nothing
+            if latest > U.current_build():
+                self._relay.found.emit(latest)
+        threading.Thread(target=work, daemon=True).start()
+
+    def _offer_update(self, latest: int):
+        if self.rec and self.rec.recording:
+            return
+        self.check_update()
+
     def check_update(self):
         if self.rec and self.rec.recording:
             QMessageBox.information(self, "Update", "Stop the recording first.")
@@ -649,6 +674,7 @@ def run():
     U.clean_old(Path(s.base_dir))
     w = MainWindow(s)
     hint = w.sizeHint()
-    w.resize(max(900, hint.width()), max(720, hint.height()))
+    w.resize(max(900, hint.width()), hint.height())
     w.show()
+    w.start_update_check()
     return app.exec()

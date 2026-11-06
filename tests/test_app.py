@@ -229,3 +229,21 @@ def test_updater_install(tmp_path):
     U.clean_old(tmp_path)
     assert not (tmp_path / "ClarinetTone.old.exe").exists() and not new.exists()
     assert U.current_build() >= 0
+
+
+def test_startup_update_check(tmp_path, monkeypatch):
+    os.environ["APPDATA"] = str(tmp_path / "appdata")
+    from PySide6.QtWidgets import QApplication
+    app = QApplication.instance() or QApplication([])
+    from clarinet_tone import updater as U
+    from clarinet_tone.ui import MainWindow
+    monkeypatch.setattr(U, "current_build", lambda: 5)
+    monkeypatch.setattr(U, "latest_release", lambda: (6, "http://x"))
+    s = C.Settings(base_dir=str(tmp_path / "Clarinet tone"))
+    w = MainWindow(s, mic_finder=lambda: MicChoice(0, "Blue Snowball", "MME", True), recorder_cls=FakeRecorder)
+    offered = []
+    w.check_update = lambda: offered.append(1)
+    w.start_update_check()
+    wait_for(app, lambda: offered, 3)
+    assert offered
+    w.close()
