@@ -107,6 +107,12 @@ def pump(app, secs):
     while time.time() - t0 < secs:
         app.processEvents(); time.sleep(0.02)
 
+def wait_for(app, cond, secs=6.0):
+    t0 = time.time()
+    while time.time() - t0 < secs and not cond():
+        app.processEvents(); time.sleep(0.02)
+    return cond()
+
 def test_unplug(tmp_path):
     os.environ["APPDATA"] = str(tmp_path / "appdata")
     from PySide6.QtWidgets import QApplication
@@ -118,12 +124,12 @@ def test_unplug(tmp_path):
     w = MainWindow(s, mic_finder=finder, recorder_cls=FakeRecorder, device_refresher=lambda: None)
     w.start(); pump(app, 0.8)
     PLUGGED["on"] = False
-    pump(app, 2.2)
+    wait_for(app, lambda: not w.mic_ok)
     assert not w.mic_ok and w.rec.paused and "disconnected" in w.mic_label.text()
     assert not w.btn_pause.isEnabled() and w.btn_stop.isEnabled()
     secs_at_loss = w.rec.seconds
     PLUGGED["on"] = True
-    pump(app, 2.6)
+    wait_for(app, lambda: w.mic_ok)
     assert w.mic_ok and "back" in w.mic_label.text() and w.rec.paused
     w.toggle_pause(); pump(app, 0.6); w.stop()
     f = next(s.recordings_dir.glob("*.wav"))
@@ -131,9 +137,9 @@ def test_unplug(tmp_path):
     assert meta["disconnects"] and meta["microphone_changes"]
     assert sf.info(str(f)).duration > secs_at_loss + 0.3
     # unplugged while idle: Record disabled until it returns
-    PLUGGED["on"] = False; pump(app, 2.2)
+    PLUGGED["on"] = False; wait_for(app, lambda: not w.btn_rec.isEnabled())
     assert not w.btn_rec.isEnabled()
-    PLUGGED["on"] = True; pump(app, 2.6)
+    PLUGGED["on"] = True; wait_for(app, lambda: w.btn_rec.isEnabled())
     assert w.btn_rec.isEnabled() and "✓" in w.mic_label.text()
     w.close()
 
