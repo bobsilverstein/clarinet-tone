@@ -7,7 +7,8 @@ Keep every setting the same from day to day.
 | Microphone | Blue Snowball iCE (front-facing only; no pattern switch) |
 | Program | Audacity |
 | Channels | 1 (mono) |
-| Sample rate | 48000 Hz |
+| Sample rate | 44100 Hz (matches the mic; first session on 2026-11-05 used 48000) |
+| Encoding | Signed 24-bit PCM |
 | Mic distance | 5 feet from player |
 | Mic aim | Middle of the clarinet, at key height |
 | Clarinet | B-flat |
