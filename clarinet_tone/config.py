@@ -1,0 +1,161 @@
+"""Settings, exercises, reeds, and file naming."""
+import json
+import os
+import re
+from dataclasses import dataclass, asdict, field
+from datetime import datetime, date
+from pathlib import Path
+
+APP_NAME = "Clarinet Tone Tracker"
+SAMPLE_RATE = 48000
+SUBTYPE = "PCM_24"
+MIC_HINT = "snowball"
+
+
+def documents_dir() -> Path:
+    """The user's Documents folder (handles a relocated Documents on Windows)."""
+    if os.name == "nt":
+        try:
+            import ctypes
+            from ctypes import wintypes
+            buf = ctypes.create_unicode_buffer(wintypes.MAX_PATH)
+            # CSIDL_PERSONAL = 5 (Documents)
+            ctypes.windll.shell32.SHGetFolderPathW(None, 5, None, 0, buf)
+            if buf.value:
+                return Path(buf.value)
+        except Exception:
+            pass
+    return Path.home() / "Documents"
+
+
+def default_base_dir() -> Path:
+    return documents_dir() / "Claude" / "Clarinet tone"
+
+
+def settings_path() -> Path:
+    root = Path(os.environ.get("APPDATA", Path.home() / ".config"))
+    return root / "ClarinetTone" / "settings.json"
+
+
+@dataclass
+class Settings:
+    base_dir: str = ""
+    last_reed: str = ""
+    level_yellow_db: float = -6.0
+    level_red_db: float = -2.0
+
+    @property
+    def recordings_dir(self) -> Path:
+        return Path(self.base_dir) / "Recordings"
+
+    @property
+    def reeds_file(self) -> Path:
+        return Path(self.base_dir) / "reeds.json"
+
+    @classmethod
+    def load(cls) -> "Settings":
+        p = settings_path()
+        s = cls()
+        if p.exists():
+            try:
+                data = json.loads(p.read_text(encoding="utf-8"))
+                for k, v in data.items():
+                    if hasattr(s, k):
+                        setattr(s, k, v)
+            except Exception:
+                pass
+        if not s.base_dir:
+            s.base_dir = str(default_base_dir())
+        return s
+
+    def save(self) -> None:
+        p = settings_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(asdict(self), indent=2), encoding="utf-8")
+
+
+@dataclass(frozen=True)
+class Exercise:
+    key: str          # used in file names
+    title: str
+    tempo: str        # what the metronome should be set to
+
+
+def long_tone_for(day: date) -> Exercise:
+    if day.day % 2:
+        return Exercise("long-tone-chalumeau", "Long tones, chalumeau (odd day)", "88 bpm, 4/4")
+    return Exercise("long-tone-clarion", "Long tones, clarion (even day)", "88 bpm, 4/4")
+
+
+LEGATO = Exercise("legato", "Legato warm-up", "88 bpm, 2/4")
+REGISTER = Exercise("register", "Register key / embouchure", "60 bpm")
+
+
+def exercises_for(day: date) -> list[Exercise]:
+    return [long_tone_for(day), LEGATO, REGISTER]
+
+
+# ---------------------------------------------------------------- reeds
+
+DEFAULT_BRAND = "Vandoren"
+DEFAULT_MODEL = "56 Rue Lepic"
+DEFAULT_STRENGTH = "3"
+
+
+@dataclass
+class Reed:
+    started: str            # ISO date written on the reed, e.g. 2026-08-04
+    dots: int               # 1, 2 or 3 dots on the heel
+    brand: str = DEFAULT_BRAND
+    model: str = DEFAULT_MODEL
+    strength: str = DEFAULT_STRENGTH
+    notes: str = ""
+    retired: bool = False
+    adjustments: list = field(default_factory=list)   # [{"date":..., "what":...}]
+
+    @property
+    def label(self) -> str:
+        d = date.fromisoformat(self.started)
+        return f"{d.month:02d}{d.day:02d}-{self.dots}"
+
+    @property
+    def display(self) -> str:
+        d = date.fromisoformat(self.started)
+        return (f"{d.month}/{d.day}/{d.year}  {'•' * self.dots}   "
+                f"{self.brand} {self.model} #{self.strength}")
+
+
+def load_reeds(path: Path) -> list[Reed]:
+    if not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return [Reed(**r) for r in data]
+    except Exception:
+        return []
+
+
+def save_reeds(path: Path, reeds: list[Reed]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps([asdict(r) for r in reeds], indent=2), encoding="utf-8")
+    tmp.replace(path)
+
+
+# ---------------------------------------------------------------- file names
+
+_SAFE = re.compile(r"[^A-Za-z0-9-]")
+
+
+def recording_name(start: datetime, reed_label: str, exercise_key: str) -> str:
+    reed = _SAFE.sub("", reed_label) or "unknown"
+    return f"{start:%Y-%m-%d_%H%M}_reed-{reed}_{exercise_key}.wav"
+
+
+def unique_path(folder: Path, name: str) -> Path:
+    p = folder / name
+    n = 2
+    while p.exists():
+        p = folder / f"{Path(name).stem}_{n}.wav"
+        n += 1
+    return p
