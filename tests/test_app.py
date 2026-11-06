@@ -8,17 +8,25 @@ import numpy as np, soundfile as sf
 from clarinet_tone import config as C
 from clarinet_tone.recorder import Recorder, MicChoice
 
+import types
+PLUGGED = {"on": True}
+
 class FakeRecorder(Recorder):
     def open(self):
         self._run = True
+        self.stream_error = ""; self.silent_since = None
+        self._stream = types.SimpleNamespace(active=True, abort=lambda: None, close=lambda: None)
+        self.last_callback = time.time()
         def gen():
             t = 0
-            while self._run:
+            while self._run and PLUGGED["on"]:
                 n = 1024
                 x = 0.5*np.sin(2*np.pi*233.08*(np.arange(t, t+n)/C.SAMPLE_RATE)).astype(np.float32)
                 self._callback(x[:, None], n, None, None); t += n
                 time.sleep(n/C.SAMPLE_RATE)
         threading.Thread(target=gen, daemon=True).start()
+    def _close_stream(self):
+        self._run = False; self._stream = None
     def close(self):
         super().close(); self._run = False
 
@@ -88,4 +96,43 @@ def test_discard(tmp_path):
     w.discard(confirm=False)
     assert list(s.recordings_dir.glob("*")) == [] and w.ex_group.checkedId() == 0
     assert not w.btn_discard.isEnabled()
+    w.close()
+
+
+def finder():
+    return MicChoice(0, "Blue Snowball", "MME", True) if PLUGGED["on"] else None
+
+def pump(app, secs):
+    t0 = time.time()
+    while time.time() - t0 < secs:
+        app.processEvents(); time.sleep(0.02)
+
+def test_unplug(tmp_path):
+    os.environ["APPDATA"] = str(tmp_path / "appdata")
+    from PySide6.QtWidgets import QApplication
+    app = QApplication.instance() or QApplication([])
+    from clarinet_tone.ui import MainWindow
+    s = C.Settings(base_dir=str(tmp_path / "Clarinet tone"))
+    C.save_reeds(s.reeds_file, [C.Reed(started="2026-08-04", dots=1)])
+    PLUGGED["on"] = True
+    w = MainWindow(s, mic_finder=finder, recorder_cls=FakeRecorder, device_refresher=lambda: None)
+    w.start(); pump(app, 0.8)
+    PLUGGED["on"] = False
+    pump(app, 2.2)
+    assert not w.mic_ok and w.rec.paused and "disconnected" in w.mic_label.text()
+    assert not w.btn_pause.isEnabled() and w.btn_stop.isEnabled()
+    secs_at_loss = w.rec.seconds
+    PLUGGED["on"] = True
+    pump(app, 2.6)
+    assert w.mic_ok and "back" in w.mic_label.text() and w.rec.paused
+    w.toggle_pause(); pump(app, 0.6); w.stop()
+    f = next(s.recordings_dir.glob("*.wav"))
+    meta = json.loads(f.with_suffix(".json").read_text())
+    assert meta["disconnects"] and meta["microphone_changes"]
+    assert sf.info(str(f)).duration > secs_at_loss + 0.3
+    # unplugged while idle: Record disabled until it returns
+    PLUGGED["on"] = False; pump(app, 2.2)
+    assert not w.btn_rec.isEnabled()
+    PLUGGED["on"] = True; pump(app, 2.6)
+    assert w.btn_rec.isEnabled() and "✓" in w.mic_label.text()
     w.close()

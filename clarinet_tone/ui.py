@@ -1,4 +1,5 @@
 """Main window."""
+import time
 from datetime import date, datetime
 from pathlib import Path
 
@@ -11,7 +12,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import config as C
-from .recorder import Recorder, choose_mic
+from .recorder import Recorder, choose_mic, refresh_devices
 
 FONT_PT = 14
 
@@ -103,8 +104,12 @@ class ReedDialog(QDialog):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, settings: C.Settings, mic_finder=choose_mic, recorder_cls=Recorder):
+    def __init__(self, settings: C.Settings, mic_finder=choose_mic, recorder_cls=Recorder,
+                 device_refresher=refresh_devices):
         super().__init__()
+        self.mic_finder, self.recorder_cls, self.refresh_dev = mic_finder, recorder_cls, device_refresher
+        self.mic_ok = False
+        self.next_retry = 0.0
         self.s = settings
         self.setWindowTitle(C.APP_NAME)
         self.reeds = C.load_reeds(self.s.reeds_file)
@@ -205,30 +210,71 @@ class MainWindow(QMainWindow):
         self.fill_reeds()
         self.reed_box.currentIndexChanged.connect(lambda _: self.refresh_labels())
 
-        # microphone
-        mic = mic_finder()
-        if mic is None:
-            self.mic_label.setText("Microphone: none found.  Plug in the Snowball and restart.")
-            self.mic_label.setStyleSheet("color:#c62828;font-weight:bold")
-        else:
-            self.rec = recorder_cls(mic)
-            try:
-                self.rec.open()
-                if mic.found_snowball:
-                    self.mic_label.setText(f"Microphone: {mic.name}  ✓")
-                    self.mic_label.setStyleSheet("color:#2e7d32;font-weight:bold")
-                else:
-                    self.mic_label.setText(f"Snowball not found.  Using: {mic.name}")
-                    self.mic_label.setStyleSheet("color:#c62828;font-weight:bold")
-            except Exception as e:
-                self.rec = None
-                self.mic_label.setText(f"Microphone could not open: {e}")
-                self.mic_label.setStyleSheet("color:#c62828;font-weight:bold")
+        self.connect_mic(first=True)
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.tick)
         self.timer.start(50)
         self.refresh_labels()
+
+    # ------------------------------------------------------------ microphone
+    def show_mic(self, text: str, good: bool):
+        self.mic_label.setText(text)
+        self.mic_label.setStyleSheet(f"color:{'#2e7d32' if good else '#c62828'};font-weight:bold")
+
+    def connect_mic(self, first: bool = False) -> bool:
+        """Find and open the mic.  Returns True when a working mic is open."""
+        if not first:
+            self.refresh_dev()
+        try:
+            mic = self.mic_finder()
+        except Exception:
+            mic = None
+        if mic is None or (not first and not mic.found_snowball and self.rec and self.rec.mic.found_snowball):
+            # nothing usable (or only a fallback while the Snowball is missing)
+            self.mic_ok = False
+            if first:
+                self.show_mic("Microphone: none found.  Plug in the Snowball.", False)
+            return False
+        try:
+            if self.rec is None:
+                self.rec = self.recorder_cls(mic)
+                self.rec.open()
+            else:
+                self.rec.reopen(mic)
+        except Exception as e:
+            self.mic_ok = False
+            self.show_mic(f"Microphone could not open: {e}", False)
+            return False
+        self.mic_ok = True
+        if mic.found_snowball:
+            self.show_mic(f"Microphone: {mic.name}  ✓", True)
+        else:
+            self.show_mic(f"Snowball not found.  Using: {mic.name}", False)
+        return True
+
+    def watch_mic(self):
+        """Called by the timer: detect a lost mic and try to get it back."""
+        now = time.time()
+        if self.mic_ok and self.rec and self.rec.mic_lost():
+            self.mic_ok = False
+            if self.rec.recording:
+                if not self.rec.paused:
+                    self.rec.pause()
+                self.rec.meta.setdefault("disconnects", []).append(round(self.rec.seconds, 2))
+                self.show_mic("Microphone disconnected.  Recording paused; what you played "
+                              "so far is kept.  Plug the mic back in.", False)
+            else:
+                self.show_mic("Microphone disconnected.  Plug the mic back in.", False)
+            self.next_retry = now + 2
+            self.update_buttons()
+        elif not self.mic_ok and now >= self.next_retry:
+            self.next_retry = now + 2
+            if self.connect_mic():
+                if self.rec.recording:
+                    self.show_mic(f"Microphone back: {self.rec.mic.name}.  "
+                                  "Press Resume to continue recording.", True)
+                self.update_buttons()
 
     # ------------------------------------------------------------ reeds
     def fill_reeds(self, select_label: str | None = None):
@@ -289,9 +335,9 @@ class MainWindow(QMainWindow):
 
     def update_buttons(self):
         recording = bool(self.rec and self.rec.recording)
-        ready = bool(self.rec) and self.current_reed() is not None
+        ready = bool(self.rec) and self.mic_ok and self.current_reed() is not None
         self.btn_rec.setEnabled(ready and not recording)
-        self.btn_pause.setEnabled(recording)
+        self.btn_pause.setEnabled(recording and (self.mic_ok or not self.rec.paused))
         self.btn_stop.setEnabled(recording)
         self.btn_discard.setEnabled(recording or self.last_saved is not None)
         self.btn_discard.setText("✕  Discard" if recording or self.last_saved is None
@@ -387,7 +433,11 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------ meter
     def tick(self):
-        if not self.rec:
+        self.watch_mic()
+        if not (self.rec and self.mic_ok):
+            if self.rec and self.rec.recording:
+                s = self.rec.seconds
+                self.clock.setText(f"{int(s // 60)}:{int(s % 60):02d}  (paused)")
             return
         level, hold, clipped = self.rec.meter.read()
         self.bar.set_levels(level, hold)

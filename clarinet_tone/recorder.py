@@ -30,6 +30,16 @@ def _sd():
     return sounddevice
 
 
+def refresh_devices() -> None:
+    """Make PortAudio re-scan devices (needed after a mic is unplugged or plugged in)."""
+    sd = _sd()
+    try:
+        sd._terminate()
+        sd._initialize()
+    except Exception:
+        pass
+
+
 def list_inputs():
     sd = _sd()
     apis = sd.query_hostapis()
@@ -108,25 +118,73 @@ class Recorder:
         self.meta: dict = {}
         self.frames_written = 0
         self._pause_started = None
+        self.last_callback = 0.0
+        self.silent_since = None
+        self.stream_error = ""
 
     # ------------------------------------------------------------ stream
     def open(self) -> None:
         sd = _sd()
+        self.stream_error = ""
+        self.silent_since = None
         self._stream = sd.InputStream(device=self.mic.index, channels=1,
                                       samplerate=SAMPLE_RATE, dtype="float32",
-                                      blocksize=1024, callback=self._callback)
+                                      blocksize=1024, callback=self._callback,
+                                      finished_callback=self._finished)
         self._stream.start()
+        self.last_callback = time.time()
+
+    def _close_stream(self) -> None:
+        st, self._stream = self._stream, None
+        if st is not None:
+            for f in (st.abort, st.close):
+                try:
+                    f()
+                except Exception:
+                    pass
 
     def close(self) -> None:
         if self._recording:
             self.stop()
-        if self._stream is not None:
-            self._stream.stop()
-            self._stream.close()
-            self._stream = None
+        self._close_stream()
+
+    def reopen(self, mic: MicChoice) -> None:
+        """Switch to a (re)found microphone; a recording in progress continues."""
+        self._close_stream()
+        self.mic = mic
+        self.open()
+        if self._recording:
+            self.meta.setdefault("microphone_changes", []).append(
+                {"at_seconds": round(self.seconds, 2), "microphone": mic.name})
+
+    def _finished(self):
+        self.stream_error = self.stream_error or "stream stopped"
+
+    # A live microphone always carries some noise.  No callbacks for 1.5 s,
+    # or 1.5 s of exact digital zeros, means the mic is gone.
+    LOST_AFTER = 1.5
+
+    def mic_lost(self) -> bool:
+        now = time.time()
+        if self._stream is None or self.stream_error:
+            return True
+        try:
+            if not self._stream.active:
+                return True
+        except Exception:
+            return True
+        if now - self.last_callback > self.LOST_AFTER:
+            return True
+        return self.silent_since is not None and now - self.silent_since > self.LOST_AFTER
 
     def _callback(self, indata, frames, time_info, status):
+        self.last_callback = time.time()
         block = indata[:, 0].copy()
+        if block.size and not np.any(block):
+            if self.silent_since is None:
+                self.silent_since = self.last_callback
+        else:
+            self.silent_since = None
         self.meter.update(block)
         if self._recording and not self._paused:
             self._q.put(block)
