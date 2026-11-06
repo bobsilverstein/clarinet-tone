@@ -169,10 +169,17 @@ def test_dots_buttons_and_loudest(tmp_path):
     C.save_reeds(s.reeds_file, [C.Reed(started="2026-08-04", dots=1)])
     w = MainWindow(s, mic_finder=lambda: MicChoice(0, "Blue Snowball", "MME", True), recorder_cls=FakeRecorder)
     assert w.reed_box.currentText().endswith("•") and w.dots_group.checkedId() == 1
+    from PySide6.QtWidgets import QMessageBox
+    QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.Yes)
+    w.current_reed().notes = "one-dot notes"
     w.dots_group.button(3).click()
-    r = C.load_reeds(s.reeds_file)[0]
-    assert r.dots == 3 and r.started == "2026-08-04" and r.adjustments
+    reeds = {r.label: r for r in C.load_reeds(s.reeds_file)}
+    assert set(reeds) == {"0804-1", "0804-3"}
+    assert reeds["0804-1"].notes == "one-dot notes" and reeds["0804-3"].notes == ""
     assert w.reed_box.currentText().endswith("•••") and w.dots_group.checkedId() == 3
+    w.dots_group.button(1).click()
+    assert w.current_reed().label == "0804-1" and w.reed_box.count() == 2
+    w.dots_group.button(3).click()
     w.start(); pump(app, 0.6)
     assert "Loudest this take" in w.loudest.text()
     assert not w.dots_group.button(1).isEnabled()
@@ -196,3 +203,12 @@ def test_mic_message_closes_when_plugged_in(tmp_path):
     PLUGGED["on"] = True; pump(app, 2.3)
     assert w.mic_box is None and not box.isVisible() and w.btn_rec.isEnabled()
     w.close()
+
+
+def test_undo_old_dot_change(tmp_path):
+    f = tmp_path / "reeds.json"
+    C.save_reeds(f, [C.Reed(started="2026-08-04", dots=3, notes="Nice and open",
+                            adjustments=[{"date": "2026-11-06", "what": "dots 1 to 3"}])])
+    r = C.load_reeds(f)[0]
+    assert r.dots == 1 and r.notes == "Nice and open" and r.adjustments == []
+    assert C.load_reeds(f)[0].dots == 1     # saved back to disk

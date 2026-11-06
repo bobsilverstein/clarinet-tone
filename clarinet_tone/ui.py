@@ -358,18 +358,28 @@ class MainWindow(QMainWindow):
             self.dots_group.button(n).setChecked(bool(r) and r.dots == n)
 
     def set_dots(self, n: int):
+        """Switch to the reed with the same date and n dots.  Date plus dots
+        identify one physical reed, so each keeps its own notes."""
         r = self.current_reed()
         if not r or r.dots == n:
             return
-        new_label = C.Reed(started=r.started, dots=n).label
-        if any(x is not r and x.label == new_label for x in self.reeds):
-            QMessageBox.warning(self, "Reed", f"A reed labeled {new_label} already exists.")
-            self.show_dots()
-            return
-        r.adjustments.append({"date": date.today().isoformat(), "what": f"dots {r.dots} to {n}"})
-        r.dots = n      # only the dots change; the date stays as written on the reed
-        C.save_reeds(self.s.reeds_file, self.reeds)
-        self.fill_reeds(r.label)
+        other = next((x for x in self.reeds if x.started == r.started and x.dots == n), None)
+        if other is None:
+            d = date.fromisoformat(r.started)
+            if QMessageBox.question(
+                    self, "Reed",
+                    f"No reed dated {d.month}/{d.day}/{d.year} with {n} dot(s) yet.  Add it?"
+                    ) != QMessageBox.Yes:
+                self.show_dots()
+                return
+            other = C.Reed(started=r.started, dots=n, brand=r.brand,
+                           model=r.model, strength=r.strength)
+            self.reeds.append(other)
+            C.save_reeds(self.s.reeds_file, self.reeds)
+        elif other.retired:
+            other.retired = False
+            C.save_reeds(self.s.reeds_file, self.reeds)
+        self.fill_reeds(other.label)
         self.refresh_labels()
 
     # ------------------------------------------------------------ labels

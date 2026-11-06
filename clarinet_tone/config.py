@@ -169,9 +169,34 @@ def load_reeds(path: Path) -> list[Reed]:
         return []
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-        return [Reed(**r) for r in data]
+        reeds = [Reed(**r) for r in data]
     except Exception:
         return []
+    if _undo_dot_changes(reeds):
+        save_reeds(path, reeds)
+    return reeds
+
+
+_DOT_CHANGE = re.compile(r"^dots (\d) to (\d)$")
+
+
+def _undo_dot_changes(reeds: list[Reed]) -> bool:
+    """Build 11d1322 changed a reed's dots in place, which moved one reed's notes
+    onto another reed.  Put each such reed back to its original dots."""
+    changed = False
+    for r in reeds:
+        moves = [a for a in r.adjustments
+                 if isinstance(a, dict) and _DOT_CHANGE.match(str(a.get("what", "")))]
+        if not moves:
+            continue
+        original = int(_DOT_CHANGE.match(moves[0]["what"]).group(1))
+        label = Reed(started=r.started, dots=original).label
+        if any(x is not r and x.label == label for x in reeds):
+            continue
+        r.dots = original
+        r.adjustments = [a for a in r.adjustments if a not in moves]
+        changed = True
+    return changed
 
 
 def save_reeds(path: Path, reeds: list[Reed]) -> None:
