@@ -127,7 +127,7 @@ def long_tone_for(day: date) -> Exercise:
 
 
 LEGATO = Exercise("legato", "Legato warm-up", "88 bpm, 2/4")
-REGISTER = Exercise("register", "Register key / embouchure", "60 bpm")
+REGISTER = Exercise("register", "Register key / embouchure", "60 bpm, 2/4")
 
 
 def exercises_for(day: date) -> list[Exercise]:
