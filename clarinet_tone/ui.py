@@ -1,4 +1,6 @@
 """Main window."""
+import os
+import subprocess
 import time
 from datetime import date, datetime
 from pathlib import Path
@@ -8,7 +10,7 @@ from PySide6.QtGui import QColor, QFont, QPainter
 from PySide6.QtWidgets import (
     QApplication, QButtonGroup, QComboBox, QDateEdit, QDialog, QDialogButtonBox,
     QFileDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
-    QMessageBox, QPushButton, QSpinBox, QTextEdit, QVBoxLayout, QWidget,
+    QMessageBox, QPushButton, QTextEdit, QVBoxLayout, QWidget,
 )
 
 from . import config as C
@@ -66,8 +68,7 @@ class ReedDialog(QDialog):
         self.started = QDateEdit(QDate.currentDate())
         self.started.setCalendarPopup(True)
         self.started.setDisplayFormat("M/d/yyyy")
-        self.dots = QSpinBox()
-        self.dots.setRange(1, 3)
+        self._dots = reed.dots if reed else 1
         self.brand = QLineEdit(C.DEFAULT_BRAND)
         self.model = QLineEdit(C.DEFAULT_MODEL)
         self.strength = QLineEdit(C.DEFAULT_STRENGTH)
@@ -76,13 +77,11 @@ class ReedDialog(QDialog):
         self.notes.setFixedHeight(90)
         if reed:
             self.started.setDate(QDate.fromString(reed.started, "yyyy-MM-dd"))
-            self.dots.setValue(reed.dots)
             self.brand.setText(reed.brand)
             self.model.setText(reed.model)
             self.strength.setText(reed.strength)
             self.notes.setPlainText(reed.notes)
         f.addRow("Date on reed", self.started)
-        f.addRow("Dots on heel", self.dots)
         f.addRow("Brand", self.brand)
         f.addRow("Model", self.model)
         f.addRow("Strength", self.strength)
@@ -95,7 +94,7 @@ class ReedDialog(QDialog):
     def reed(self) -> C.Reed:
         return C.Reed(
             started=self.started.date().toString("yyyy-MM-dd"),
-            dots=self.dots.value(),
+            dots=self._dots,
             brand=self.brand.text().strip() or C.DEFAULT_BRAND,
             model=self.model.text().strip() or C.DEFAULT_MODEL,
             strength=self.strength.text().strip() or C.DEFAULT_STRENGTH,
@@ -109,6 +108,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.mic_finder, self.recorder_cls, self.refresh_dev = mic_finder, recorder_cls, device_refresher
         self.mic_ok = False
+        self.mic_box = None
         self.next_retry = 0.0
         self.s = settings
         self.setWindowTitle(C.APP_NAME)
@@ -138,6 +138,22 @@ class MainWindow(QMainWindow):
         hr.addWidget(add)
         hr.addWidget(edit)
         v.addLayout(hr)
+
+        # dots on the reed's heel, set with three buttons
+        hd = QHBoxLayout()
+        hd.addWidget(QLabel("Dots on heel:"))
+        self.dots_group = QButtonGroup(self)
+        self.dots_group.setExclusive(True)
+        for n in (1, 2, 3):
+            b = QPushButton("•" * n)
+            b.setCheckable(True)
+            b.setMinimumWidth(80)
+            b.setStyleSheet("QPushButton:checked{background:#1565c0;color:white;font-weight:bold}")
+            self.dots_group.addButton(b, n)
+            hd.addWidget(b)
+        hd.addStretch(1)
+        self.dots_group.idClicked.connect(self.set_dots)
+        v.addLayout(hd)
 
         # exercises
         v.addWidget(QLabel("Exercise:"))
@@ -189,6 +205,14 @@ class MainWindow(QMainWindow):
         self.clock.setFont(cf)
         v.addWidget(self.clock)
 
+        self.loudest = QLabel("")
+        self.loudest.setAlignment(Qt.AlignCenter)
+        lf = QFont(self.font())
+        lf.setPointSize(int(FONT_PT * 1.5))
+        lf.setBold(True)
+        self.loudest.setFont(lf)
+        v.addWidget(self.loudest)
+
         self.file_label = QLabel()
         self.file_label.setWordWrap(True)
         v.addWidget(self.file_label)
@@ -197,6 +221,9 @@ class MainWindow(QMainWindow):
         self.folder_label = QLabel()
         self.folder_label.setWordWrap(True)
         hf.addWidget(self.folder_label, 1)
+        opn = QPushButton("Open recordings folder")
+        opn.clicked.connect(self.open_folder)
+        hf.addWidget(opn)
         chg = QPushButton("Change folder…")
         chg.clicked.connect(self.change_folder)
         hf.addWidget(chg)
@@ -236,11 +263,13 @@ class MainWindow(QMainWindow):
             if first:
                 self.show_mic("Snowball microphone not found.  Plug it in; "
                               "the program will find it on its own.", False)
-                QTimer.singleShot(300, lambda: QMessageBox.warning(
-                    self, "Microphone",
-                    "The Blue Snowball is not plugged in.\n\n"
-                    "Plug it in.  The program will find it within a few seconds, "
-                    "and the Record button will turn on."))
+                box = QMessageBox(QMessageBox.Warning, "Microphone",
+                                  "The Blue Snowball is not plugged in.\n\n"
+                                  "Plug it in.  The program will find it within a few seconds, "
+                                  "and this message will close on its own.", QMessageBox.Ok, self)
+                box.setModal(False)
+                self.mic_box = box
+                QTimer.singleShot(300, lambda: self.mic_box and self.mic_box.show())
             return False
         try:
             if self.rec is None:
@@ -254,6 +283,9 @@ class MainWindow(QMainWindow):
             return False
         self.mic_ok = True
         self.show_mic(f"Microphone: {mic.name}  ✓", True)
+        if self.mic_box is not None:
+            self.mic_box.close()
+            self.mic_box = None
         return True
 
     def watch_mic(self):
@@ -320,6 +352,26 @@ class MainWindow(QMainWindow):
             self.fill_reeds(new.label)
             self.refresh_labels()
 
+    def show_dots(self):
+        r = self.current_reed()
+        for n in (1, 2, 3):
+            self.dots_group.button(n).setChecked(bool(r) and r.dots == n)
+
+    def set_dots(self, n: int):
+        r = self.current_reed()
+        if not r or r.dots == n:
+            return
+        new_label = C.Reed(started=r.started, dots=n).label
+        if any(x is not r and x.label == new_label for x in self.reeds):
+            QMessageBox.warning(self, "Reed", f"A reed labeled {new_label} already exists.")
+            self.show_dots()
+            return
+        r.adjustments.append({"date": date.today().isoformat(), "what": f"dots {r.dots} to {n}"})
+        r.dots = n      # only the dots change; the date stays as written on the reed
+        C.save_reeds(self.s.reeds_file, self.reeds)
+        self.fill_reeds(r.label)
+        self.refresh_labels()
+
     # ------------------------------------------------------------ labels
     def exercise(self) -> C.Exercise:
         return self.exercises[self.ex_group.checkedId()]
@@ -334,6 +386,7 @@ class MainWindow(QMainWindow):
             name = C.recording_name(datetime.now(), r.label, ex.key)
             self.file_label.setText(f"Next file: {name}")
         self.folder_label.setText(f"Folder: {self.s.recordings_dir}")
+        self.show_dots()
         self.update_buttons()
 
     def update_buttons(self):
@@ -348,6 +401,8 @@ class MainWindow(QMainWindow):
         for b in self.ex_group.buttons():
             b.setEnabled(not recording)
         self.reed_box.setEnabled(not recording)
+        for b in self.dots_group.buttons():
+            b.setEnabled(not recording and self.current_reed() is not None)
         if recording:
             self.btn_pause.setText("▶  Resume" if self.rec.paused else "❚❚  Pause")
 
@@ -387,11 +442,13 @@ class MainWindow(QMainWindow):
         self.last_saved = (path, ex_index)
         secs = self.rec.seconds
         _, peak, clipped = self.rec.meter.read()
-        msg = f"Saved {path.name}  ({int(secs // 60)}:{int(secs % 60):02d})."
+        msg = (f"Saved {path.name}  ({int(secs // 60)}:{int(secs % 60):02d}).  "
+               f"Loudest: {peak:.0f} dB.")
         if clipped:
             msg += "  Warning: the level hit the top (clipped).  Move the level down."
         self.status.setText(msg)
         self.status.setStyleSheet("color:#c62828" if clipped else "color:#2e7d32")
+        self.clear_loudest()
         # advance to the next exercise
         nxt = min(self.ex_group.checkedId() + 1, len(self.exercises) - 1)
         self.ex_group.button(nxt).setChecked(True)
@@ -421,7 +478,26 @@ class MainWindow(QMainWindow):
         self.status.setText(f"Discarded {name}.")
         self.status.setStyleSheet("color:#444")
         self.clock.setText("0:00")
+        self.clear_loudest()
         self.refresh_labels()
+
+    def clear_loudest(self):
+        if self.rec:
+            self.rec.meter.reset()
+        self.loudest.setText("")
+        self.bar.set_levels(LevelBar.LO, LevelBar.LO)
+
+    def open_folder(self):
+        d = self.s.recordings_dir
+        try:
+            d.mkdir(parents=True, exist_ok=True)
+            C.set_general_view(d)
+            if os.name == "nt":
+                os.startfile(str(d))
+            else:
+                subprocess.Popen(["xdg-open", str(d)])
+        except Exception as e:
+            QMessageBox.warning(self, "Folder", f"Could not open {d}:\n{e}")
 
     def change_folder(self):
         if self.rec and self.rec.recording:
@@ -461,6 +537,9 @@ class MainWindow(QMainWindow):
         if self.rec.recording:
             s = self.rec.seconds
             self.clock.setText(f"{int(s // 60)}:{int(s % 60):02d}" + ("  (paused)" if self.rec.paused else ""))
+            if hold > -100:
+                self.loudest.setText(f"Loudest this take: {hold:.0f} dB" + ("  CLIPPED" if clipped else ""))
+                self.loudest.setStyleSheet(f"color:{col}")
 
     def closeEvent(self, e):
         if self.rec and self.rec.recording:
@@ -490,6 +569,7 @@ def run():
     s.save()
     try:
         s.recordings_dir.mkdir(parents=True, exist_ok=True)
+        C.set_general_view(s.recordings_dir)
     except OSError as e:
         QMessageBox.critical(None, C.APP_NAME, f"Cannot use the folder {s.recordings_dir}:\n{e}")
         return 1

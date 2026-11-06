@@ -160,8 +160,8 @@ class Reed:
     @property
     def display(self) -> str:
         d = date.fromisoformat(self.started)
-        return (f"{d.month}/{d.day}/{d.year}  {'•' * self.dots}   "
-                f"{self.brand} {self.model} #{self.strength}")
+        return (f"{d.month}/{d.day}/{d.year}   {self.brand} {self.model} "
+                f"#{self.strength}   {'•' * self.dots}")
 
 
 def load_reeds(path: Path) -> list[Reed]:
@@ -198,3 +198,30 @@ def unique_path(folder: Path, name: str) -> Path:
         p = folder / f"{Path(name).stem}_{n}.wav"
         n += 1
     return p
+
+
+# ---------------------------------------------------------------- Explorer view
+
+_DESKTOP_INI = "[ViewState]\r\nMode=\r\nVid=\r\nFolderType=Generic\r\n"
+
+
+def set_general_view(folder: Path) -> None:
+    """Ask Windows Explorer to show this folder as "General items"
+    (Name, Date modified, Type, Size) rather than as music."""
+    if os.name != "nt":
+        return
+    ini = folder / "desktop.ini"
+    try:
+        if ini.exists():
+            return
+        ini.write_text(_DESKTOP_INI, encoding="utf-8")
+        import ctypes
+        k = ctypes.windll.kernel32
+        HIDDEN, SYSTEM, READONLY = 0x2, 0x4, 0x1
+        k.SetFileAttributesW(str(ini), HIDDEN | SYSTEM)
+        # Explorer reads desktop.ini only when the folder is marked read-only or system.
+        attrs = k.GetFileAttributesW(str(folder))
+        if attrs != -1 and attrs != 0xFFFFFFFF:
+            k.SetFileAttributesW(str(folder), attrs | READONLY)
+    except Exception:
+        pass

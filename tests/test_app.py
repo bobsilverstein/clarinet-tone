@@ -158,3 +158,41 @@ def test_start_without_snowball(tmp_path):
     PLUGGED["on"] = True; pump(app, 2.3)
     assert w.btn_rec.isEnabled() and "✓" in w.mic_label.text()
     w.close()
+
+
+def test_dots_buttons_and_loudest(tmp_path):
+    os.environ["APPDATA"] = str(tmp_path / "appdata")
+    from PySide6.QtWidgets import QApplication
+    app = QApplication.instance() or QApplication([])
+    from clarinet_tone.ui import MainWindow
+    s = C.Settings(base_dir=str(tmp_path / "Clarinet tone"))
+    C.save_reeds(s.reeds_file, [C.Reed(started="2026-08-04", dots=1)])
+    w = MainWindow(s, mic_finder=lambda: MicChoice(0, "Blue Snowball", "MME", True), recorder_cls=FakeRecorder)
+    assert w.reed_box.currentText().endswith("•") and w.dots_group.checkedId() == 1
+    w.dots_group.button(3).click()
+    r = C.load_reeds(s.reeds_file)[0]
+    assert r.dots == 3 and r.started == "2026-08-04" and r.adjustments
+    assert w.reed_box.currentText().endswith("•••") and w.dots_group.checkedId() == 3
+    w.start(); pump(app, 0.6)
+    assert "Loudest this take" in w.loudest.text()
+    assert not w.dots_group.button(1).isEnabled()
+    w.stop()
+    assert w.loudest.text() == "" and "Loudest:" in w.status.text()
+    w.close()
+
+
+def test_mic_message_closes_when_plugged_in(tmp_path):
+    os.environ["APPDATA"] = str(tmp_path / "appdata")
+    from PySide6.QtWidgets import QApplication
+    app = QApplication.instance() or QApplication([])
+    from clarinet_tone.ui import MainWindow
+    s = C.Settings(base_dir=str(tmp_path / "Clarinet tone"))
+    C.save_reeds(s.reeds_file, [C.Reed(started="2026-08-04", dots=1)])
+    PLUGGED["on"] = False
+    w = MainWindow(s, mic_finder=finder, recorder_cls=FakeRecorder, device_refresher=lambda: None)
+    pump(app, 0.5)
+    box = w.mic_box
+    assert box is not None and box.isVisible()
+    PLUGGED["on"] = True; pump(app, 2.3)
+    assert w.mic_box is None and not box.isVisible() and w.btn_rec.isEnabled()
+    w.close()
