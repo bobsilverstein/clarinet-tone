@@ -212,3 +212,14 @@ def test_undo_old_dot_change(tmp_path):
     r = C.load_reeds(f)[0]
     assert r.dots == 1 and r.notes == "Nice and open" and r.adjustments == []
     assert C.load_reeds(f)[0].dots == 1     # saved back to disk
+
+
+def test_updater_install(tmp_path):
+    from clarinet_tone import updater as U
+    (tmp_path / "ClarinetTone.exe").write_text("old")
+    new = tmp_path / "ClarinetTone.new.exe"; new.write_text("new")
+    exe = U.install(new, tmp_path)
+    assert exe.read_text() == "new" and (tmp_path / "ClarinetTone.old.exe").read_text() == "old"
+    U.clean_old(tmp_path)
+    assert not (tmp_path / "ClarinetTone.old.exe").exists() and not new.exists()
+    assert U.current_build() >= 0

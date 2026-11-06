@@ -9,11 +9,12 @@ from PySide6.QtCore import Qt, QTimer, QDate
 from PySide6.QtGui import QColor, QFont, QPainter
 from PySide6.QtWidgets import (
     QApplication, QButtonGroup, QComboBox, QDateEdit, QDialog, QDialogButtonBox,
-    QFileDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
+    QFileDialog, QFormLayout, QProgressDialog, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
     QMessageBox, QPushButton, QTextEdit, QVBoxLayout, QWidget,
 )
 
 from . import config as C
+from . import updater as U
 from .recorder import Recorder, choose_mic, refresh_devices
 
 FONT_PT = 14
@@ -111,7 +112,8 @@ class MainWindow(QMainWindow):
         self.mic_box = None
         self.next_retry = 0.0
         self.s = settings
-        self.setWindowTitle(C.APP_NAME)
+        b = U.current_build()
+        self.setWindowTitle(C.APP_NAME + (f"  (build {b})" if b else ""))
         self.reeds = C.load_reeds(self.s.reeds_file)
         self.today = date.today()
         self.exercises = C.exercises_for(self.today)
@@ -221,6 +223,9 @@ class MainWindow(QMainWindow):
         self.folder_label = QLabel()
         self.folder_label.setWordWrap(True)
         hf.addWidget(self.folder_label, 1)
+        upd = QPushButton("Check for update")
+        upd.clicked.connect(self.check_update)
+        hf.addWidget(upd)
         opn = QPushButton("Open recordings folder")
         opn.clicked.connect(self.open_folder)
         hf.addWidget(opn)
@@ -509,6 +514,63 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.warning(self, "Folder", f"Could not open {d}:\n{e}")
 
+    def check_update(self):
+        if self.rec and self.rec.recording:
+            QMessageBox.information(self, "Update", "Stop the recording first.")
+            return
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            latest, url = U.latest_release()
+        except Exception as e:
+            QApplication.restoreOverrideCursor()
+            QMessageBox.warning(self, "Update", f"Could not reach GitHub:\n{e}")
+            return
+        QApplication.restoreOverrideCursor()
+        mine = U.current_build()
+        if latest <= mine:
+            QMessageBox.information(self, "Update", f"You have the newest version (build {mine}).")
+            return
+        folder = Path(self.s.base_dir)
+        if QMessageBox.question(
+                self, "Update",
+                f"Build {latest} is available (you have build {mine or 'unknown'}).\n\n"
+                f"Download it to\n{folder}\nand restart the program?") != QMessageBox.Yes:
+            return
+        prog = QProgressDialog("Downloading…", "Cancel", 0, 100, self)
+        prog.setWindowTitle("Update")
+        prog.setWindowModality(Qt.WindowModal)
+        prog.setMinimumDuration(0)
+
+        def step(done, total):
+            if total:
+                prog.setValue(int(done * 100 / total))
+            QApplication.processEvents()
+            return not prog.wasCanceled()
+
+        new = folder / "ClarinetTone.new.exe"
+        try:
+            U.download(url, new, step)
+            prog.close()
+            exe = U.install(new, folder)
+        except Exception as e:
+            prog.close()
+            try:
+                new.unlink()
+            except OSError:
+                pass
+            if not isinstance(e, InterruptedError):
+                QMessageBox.warning(self, "Update", f"The update failed:\n{e}")
+            return
+        running = U.running_exe()
+        note = ""
+        if running and running.parent != folder.resolve():
+            note = (f"\n\nFrom now on, use the copy in\n{folder}\n"
+                    f"You may delete this one:\n{running}")
+        QMessageBox.information(self, "Update", f"Build {latest} is installed.  "
+                                "The program will now restart." + note)
+        U.launch(exe)
+        self.close()
+
     def change_folder(self):
         if self.rec and self.rec.recording:
             return
@@ -583,6 +645,7 @@ def run():
     except OSError as e:
         QMessageBox.critical(None, C.APP_NAME, f"Cannot use the folder {s.recordings_dir}:\n{e}")
         return 1
+    U.clean_old(Path(s.base_dir))
     w = MainWindow(s)
     w.resize(900, 720)
     w.show()

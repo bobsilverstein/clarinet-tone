@@ -24,6 +24,9 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
         run: python -m pytest -q tests
+      - name: Stamp build number
+        shell: pwsh
+        run: Set-Content -Path clarinet_tone/_build.py -Value "BUILD = ${{ github.run_number }}"
       - name: Build exe
         run: pyinstaller --noconfirm --onefile --windowed --name ClarinetTone run_app.py
       - name: Check the packaged program starts
