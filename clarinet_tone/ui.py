@@ -163,8 +163,9 @@ class MainWindow(QMainWindow):
         hc = QHBoxLayout()
         self.btn_rec = QPushButton("●  Record")
         self.btn_pause = QPushButton("❚❚  Pause")
-        self.btn_stop = QPushButton("■  Stop")
-        for b in (self.btn_rec, self.btn_pause, self.btn_stop):
+        self.btn_stop = QPushButton("■  Stop and save")
+        self.btn_discard = QPushButton("✕  Discard")
+        for b in (self.btn_rec, self.btn_pause, self.btn_stop, self.btn_discard):
             b.setMinimumHeight(64)
             hc.addWidget(b)
         self.btn_rec.setStyleSheet("QPushButton{background:#c62828;color:white;font-weight:bold}"
@@ -172,6 +173,8 @@ class MainWindow(QMainWindow):
         self.btn_rec.clicked.connect(self.start)
         self.btn_pause.clicked.connect(self.toggle_pause)
         self.btn_stop.clicked.connect(self.stop)
+        self.btn_discard.clicked.connect(self.discard)
+        self.last_saved = None      # (path, exercise index) of the newest saved file
         v.addLayout(hc)
 
         self.clock = QLabel("0:00")
@@ -290,6 +293,9 @@ class MainWindow(QMainWindow):
         self.btn_rec.setEnabled(ready and not recording)
         self.btn_pause.setEnabled(recording)
         self.btn_stop.setEnabled(recording)
+        self.btn_discard.setEnabled(recording or self.last_saved is not None)
+        self.btn_discard.setText("✕  Discard" if recording or self.last_saved is None
+                                 else "✕  Discard last")
         for b in self.ex_group.buttons():
             b.setEnabled(not recording)
         self.reed_box.setEnabled(not recording)
@@ -314,6 +320,7 @@ class MainWindow(QMainWindow):
         self.s.last_reed = r.label
         self.s.save()
         self.file_label.setText(f"Recording to: {path.name}")
+        self.last_saved = None
         self.status.setText("")
         self.update_buttons()
 
@@ -326,7 +333,9 @@ class MainWindow(QMainWindow):
     def stop(self):
         if not (self.rec and self.rec.recording):
             return
+        ex_index = self.ex_group.checkedId()
         path = self.rec.stop()
+        self.last_saved = (path, ex_index)
         secs = self.rec.seconds
         _, peak, clipped = self.rec.meter.read()
         msg = f"Saved {path.name}  ({int(secs // 60)}:{int(secs % 60):02d})."
@@ -337,6 +346,32 @@ class MainWindow(QMainWindow):
         # advance to the next exercise
         nxt = min(self.ex_group.checkedId() + 1, len(self.exercises) - 1)
         self.ex_group.button(nxt).setChecked(True)
+        self.refresh_labels()
+
+    def discard(self, confirm: bool = True):
+        recording = bool(self.rec and self.rec.recording)
+        if not recording and self.last_saved is None:
+            return
+        if recording:
+            ex_index = self.ex_group.checkedId()
+            name = self.rec.path.name
+        else:
+            path, ex_index = self.last_saved
+            name = path.name
+        if confirm and QMessageBox.question(
+                self, "Discard", f"Delete this recording?\n\n{name}") != QMessageBox.Yes:
+            return
+        path = self.rec.stop() if recording else self.last_saved[0]
+        for f in (path, path.with_suffix(".json")):
+            try:
+                f.unlink()
+            except OSError:
+                pass
+        self.last_saved = None
+        self.ex_group.button(ex_index).setChecked(True)
+        self.status.setText(f"Discarded {name}.")
+        self.status.setStyleSheet("color:#444")
+        self.clock.setText("0:00")
         self.refresh_labels()
 
     def change_folder(self):

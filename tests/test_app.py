@@ -68,3 +68,24 @@ def test_find_base_dir(tmp_path, monkeypatch):
     assert C.find_base_dir() == docs / "Claude" / "Clarinet tone"
     monkeypatch.setattr(C, "candidate_documents", lambda: [tmp_path / "nowhere"])
     assert C.find_base_dir() is None
+
+def test_discard(tmp_path):
+    os.environ["APPDATA"] = str(tmp_path / "appdata")
+    from PySide6.QtWidgets import QApplication
+    app = QApplication.instance() or QApplication([])
+    from clarinet_tone.ui import MainWindow
+    s = C.Settings(base_dir=str(tmp_path / "Clarinet tone"))
+    C.save_reeds(s.reeds_file, [C.Reed(started="2026-08-04", dots=1)])
+    w = MainWindow(s, mic_finder=lambda: MicChoice(0, "Blue Snowball", "MME", True), recorder_cls=FakeRecorder)
+    assert not w.btn_discard.isEnabled()
+    # discard while recording
+    w.start(); time.sleep(0.3); w.discard(confirm=False)
+    assert list(s.recordings_dir.glob("*")) == [] and w.ex_group.checkedId() == 0
+    # discard after saving
+    w.start(); time.sleep(0.3); w.stop()
+    assert len(list(s.recordings_dir.glob("*"))) == 2 and w.ex_group.checkedId() == 1
+    assert w.btn_discard.isEnabled() and "last" in w.btn_discard.text()
+    w.discard(confirm=False)
+    assert list(s.recordings_dir.glob("*")) == [] and w.ex_group.checkedId() == 0
+    assert not w.btn_discard.isEnabled()
+    w.close()
