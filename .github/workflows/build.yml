@@ -28,7 +28,7 @@ jobs:
         shell: pwsh
         run: Set-Content -Path clarinet_tone/_build.py -Value "BUILD = ${{ github.run_number }}"
       - name: Build exe
-        run: pyinstaller --noconfirm --onefile --windowed --name ClarinetTone run_app.py
+        run: pyinstaller --noconfirm --onefile --windowed --name ClarinetTone --icon assets/clarinet.ico --add-data "assets/clarinet.ico;assets" run_app.py
       - name: Check the packaged program starts
         shell: pwsh
         run: |

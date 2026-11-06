@@ -81,6 +81,7 @@ class Settings:
     last_reed: str = ""
     level_yellow_db: float = -6.0
     level_red_db: float = -2.0
+    shortcut_made: bool = False
 
     @property
     def recordings_dir(self) -> Path:

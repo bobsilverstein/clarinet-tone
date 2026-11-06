@@ -7,7 +7,7 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer, QDate, QObject, Signal
 import threading
-from PySide6.QtGui import QColor, QFont, QPainter
+from PySide6.QtGui import QColor, QFont, QIcon, QPainter
 from PySide6.QtWidgets import (
     QApplication, QButtonGroup, QComboBox, QDateEdit, QDialog, QDialogButtonBox,
     QFileDialog, QFormLayout, QProgressDialog, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
@@ -224,7 +224,6 @@ class MainWindow(QMainWindow):
         self.folder_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         v.addWidget(self.folder_label)
         hf = QHBoxLayout()
-        hf.addStretch(1)
         upd = QPushButton("Check for update")
         upd.clicked.connect(self.check_update)
         hf.addWidget(upd)
@@ -234,6 +233,7 @@ class MainWindow(QMainWindow):
         chg = QPushButton("Change folder…")
         chg.clicked.connect(self.change_folder)
         hf.addWidget(chg)
+        hf.addStretch(1)
         v.addLayout(hf)
 
         self.status = QLabel()
@@ -653,9 +653,35 @@ class MainWindow(QMainWindow):
         e.accept()
 
 
+def icon_path() -> Path:
+    import sys
+    base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent))
+    return base / "assets" / "clarinet.ico"
+
+
+def make_desktop_shortcut(exe: Path) -> None:
+    """Put a Clarinet Tone shortcut on the desktop (runs PowerShell hidden)."""
+    ps = (
+        "$d=[Environment]::GetFolderPath('Desktop');"
+        "$s=(New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path $d 'Clarinet Tone.lnk'));"
+        f"$s.TargetPath='{exe}';$s.WorkingDirectory='{exe.parent}';"
+        f"$s.IconLocation='{exe},0';$s.Save()"
+    )
+    subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
+                   creationflags=0x08000000, timeout=30, check=True)
+
+
 def run():
     import sys
+    if os.name == "nt":
+        try:    # show this program's own icon on the taskbar
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Silverstein.ClarinetTone")
+        except Exception:
+            pass
     app = QApplication(sys.argv)
+    if icon_path().exists():
+        app.setWindowIcon(QIcon(str(icon_path())))
     f = QFont("Segoe UI", FONT_PT)
     app.setFont(f)
     s = C.Settings.load()
@@ -675,6 +701,16 @@ def run():
         QMessageBox.critical(None, C.APP_NAME, f"Cannot use the folder {s.recordings_dir}:\n{e}")
         return 1
     U.clean_old(Path(s.base_dir))
+    exe = U.running_exe()
+    if exe and not s.shortcut_made and exe.parent == Path(s.base_dir).resolve():
+        def mk():
+            try:
+                make_desktop_shortcut(exe)
+                s.shortcut_made = True
+                s.save()
+            except Exception:
+                pass
+        threading.Thread(target=mk, daemon=True).start()
     w = MainWindow(s)
     hint = w.sizeHint()
     w.resize(max(900, hint.width()), hint.height())
