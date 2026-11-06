@@ -219,10 +219,11 @@ class MainWindow(QMainWindow):
         self.file_label.setWordWrap(True)
         v.addWidget(self.file_label)
 
-        hf = QHBoxLayout()
         self.folder_label = QLabel()
-        self.folder_label.setWordWrap(True)
-        hf.addWidget(self.folder_label, 1)
+        self.folder_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        v.addWidget(self.folder_label)
+        hf = QHBoxLayout()
+        hf.addStretch(1)
         upd = QPushButton("Check for update")
         upd.clicked.connect(self.check_update)
         hf.addWidget(upd)
@@ -647,6 +648,7 @@ def run():
         return 1
     U.clean_old(Path(s.base_dir))
     w = MainWindow(s)
-    w.resize(900, 720)
+    hint = w.sizeHint()
+    w.resize(max(900, hint.width()), max(720, hint.height()))
     w.show()
     return app.exec()
