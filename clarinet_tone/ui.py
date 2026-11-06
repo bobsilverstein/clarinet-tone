@@ -391,7 +391,20 @@ def run():
     f = QFont("Segoe UI", FONT_PT)
     app.setFont(f)
     s = C.Settings.load()
-    s.recordings_dir.mkdir(parents=True, exist_ok=True)
+    if not s.base_dir:
+        QMessageBox.information(None, C.APP_NAME,
+            "Please choose your Clarinet tone folder\n"
+            "(Documents\\Claude\\Clarinet tone).")
+        d = QFileDialog.getExistingDirectory(None, "Choose the Clarinet tone folder")
+        if not d:
+            return 0
+        s.base_dir = d
+    s.save()
+    try:
+        s.recordings_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        QMessageBox.critical(None, C.APP_NAME, f"Cannot use the folder {s.recordings_dir}:\n{e}")
+        return 1
     w = MainWindow(s)
     w.resize(900, 720)
     w.show()

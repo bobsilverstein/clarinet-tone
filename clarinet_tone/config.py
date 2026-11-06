@@ -28,8 +28,46 @@ def documents_dir() -> Path:
     return Path.home() / "Documents"
 
 
+SUBPATH = Path("Claude") / "Clarinet tone"
+
+
+def candidate_documents() -> list[Path]:
+    """Places a Documents folder may live, most likely first."""
+    c = [documents_dir(), Path.home() / "Documents"]
+    up = os.environ.get("USERPROFILE")
+    if up:
+        c += [Path(up) / "Documents", Path(up) / "OneDrive" / "Documents"]
+    if os.name == "nt":
+        import string
+        for letter in string.ascii_uppercase[2:]:
+            users = Path(f"{letter}:/Users")
+            try:
+                if users.is_dir():
+                    c += [u / "Documents" for u in users.iterdir() if u.is_dir()]
+            except OSError:
+                continue
+    seen, out = set(), []
+    for p in c:
+        k = str(p).lower()
+        if k not in seen:
+            seen.add(k)
+            out.append(p)
+    return out
+
+
+def find_base_dir() -> Path | None:
+    """The existing Documents\\Claude\\Clarinet tone folder, if one can be found."""
+    for d in candidate_documents():
+        try:
+            if (d / SUBPATH).is_dir():
+                return d / SUBPATH
+        except OSError:
+            continue
+    return None
+
+
 def default_base_dir() -> Path:
-    return documents_dir() / "Claude" / "Clarinet tone"
+    return find_base_dir() or (documents_dir() / SUBPATH)
 
 
 def settings_path() -> Path:
@@ -64,8 +102,9 @@ class Settings:
                         setattr(s, k, v)
             except Exception:
                 pass
-        if not s.base_dir:
-            s.base_dir = str(default_base_dir())
+        if not s.base_dir or not Path(s.base_dir).is_dir():
+            found = find_base_dir()
+            s.base_dir = str(found) if found else ""
         return s
 
     def save(self) -> None:

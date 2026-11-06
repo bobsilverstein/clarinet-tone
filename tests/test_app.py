@@ -60,3 +60,11 @@ def test_window(tmp_path):
     print(files[0].name, info.duration, meta["peak_dbfs"], w.level_text.text(), w.status.text())
     w.grab().save(str(tmp_path / "window.png"))
     w.close()
+
+def test_find_base_dir(tmp_path, monkeypatch):
+    docs = tmp_path / "G" / "Users" / "Bob" / "Documents"
+    (docs / "Claude" / "Clarinet tone").mkdir(parents=True)
+    monkeypatch.setattr(C, "candidate_documents", lambda: [tmp_path / "OneDrive" / "OneNote", docs])
+    assert C.find_base_dir() == docs / "Claude" / "Clarinet tone"
+    monkeypatch.setattr(C, "candidate_documents", lambda: [tmp_path / "nowhere"])
+    assert C.find_base_dir() is None
