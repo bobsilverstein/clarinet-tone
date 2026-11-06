@@ -11,11 +11,96 @@ from PySide6.QtGui import QColor, QFont, QIcon, QPainter
 from PySide6.QtWidgets import (
     QApplication, QButtonGroup, QComboBox, QDateEdit, QDialog, QDialogButtonBox,
     QFileDialog, QFormLayout, QProgressDialog, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
-    QMessageBox, QPushButton, QTextEdit, QVBoxLayout, QWidget,
+    QListWidget, QListWidgetItem, QMessageBox, QPushButton, QTextEdit, QVBoxLayout, QWidget,
 )
 
 from . import config as C
 from . import updater as U
+from . import analysis as AN
+from . import report as RP
+
+
+class _Relay(QObject):
+    done = Signal(str, str)      # wav path, error text ("" if fine)
+    progress = Signal(str)
+
+
+def make_report(wav: Path) -> dict:
+    """Measure one recording and write its analysis and report next to it."""
+    res = AN.analyze(wav)
+    AN.save(res, wav)
+    RP.write(res, wav)
+    return res
+
+
+def open_file(p: Path):
+    if os.name == "nt":
+        os.startfile(str(p))
+    else:
+        subprocess.Popen(["xdg-open", str(p)])
+
+
+class ReportsDialog(QDialog):
+    """List past reports, newest first; make any that are missing."""
+    def __init__(self, parent, folder: Path):
+        super().__init__(parent)
+        self.setWindowTitle("Reports")
+        self.folder = folder
+        self.resize(760, 520)
+        v = QVBoxLayout(self)
+        self.lst = QListWidget()
+        self.lst.itemDoubleClicked.connect(lambda it: open_file(Path(it.data(Qt.UserRole))))
+        v.addWidget(QLabel("Double-click a report to open it."))
+        v.addWidget(self.lst, 1)
+        self.note = QLabel()
+        self.note.setWordWrap(True)
+        v.addWidget(self.note)
+        h = QHBoxLayout()
+        self.btn_make = QPushButton("Make missing reports")
+        self.btn_make.clicked.connect(self.make_missing)
+        h.addWidget(self.btn_make)
+        h.addStretch(1)
+        close = QPushButton("Close")
+        close.clicked.connect(self.accept)
+        h.addWidget(close)
+        v.addLayout(h)
+        self.fill()
+
+    def missing(self):
+        return [w for w in sorted(self.folder.glob("*.wav"))
+                if not RP.report_path(w).exists() or not AN.analysis_path(w).exists()]
+
+    def fill(self):
+        self.lst.clear()
+        for p in sorted(self.folder.glob("*.report.html"), reverse=True):
+            it = QListWidgetItem(p.name.replace(".report.html", ""))
+            it.setData(Qt.UserRole, str(p))
+            self.lst.addItem(it)
+        m = self.missing()
+        self.btn_make.setEnabled(bool(m))
+        self.note.setText(f"{len(m)} recording(s) have no report yet." if m else "Every recording has a report.")
+
+    def make_missing(self):
+        todo = self.missing()
+        if not todo:
+            return
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            # measure all first, then write reports oldest first so each compares with the ones before it
+            results = []
+            for i, w in enumerate(todo, 1):
+                self.note.setText(f"Measuring {i} of {len(todo)}: {w.name}")
+                QApplication.processEvents()
+                res = AN.analyze(w)
+                AN.save(res, w)
+                results.append((res.get("taken", ""), w, res))
+            for _, w, res in sorted(results, key=lambda t: t[0]):
+                RP.write(res, w)
+        except Exception as e:
+            QMessageBox.warning(self, "Reports", f"Could not finish:\n{e}")
+        finally:
+            QApplication.restoreOverrideCursor()
+        self.fill()
 from .recorder import Recorder, choose_mic, refresh_devices
 
 FONT_PT = 14
@@ -224,6 +309,9 @@ class MainWindow(QMainWindow):
         self.folder_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         v.addWidget(self.folder_label)
         hf = QHBoxLayout()
+        rpt = QPushButton("Reports…")
+        rpt.clicked.connect(lambda: ReportsDialog(self, self.s.recordings_dir).exec())
+        hf.addWidget(rpt)
         upd = QPushButton("Check for update")
         upd.clicked.connect(self.check_update)
         hf.addWidget(upd)
@@ -239,6 +327,19 @@ class MainWindow(QMainWindow):
         self.status = QLabel()
         self.status.setWordWrap(True)
         v.addWidget(self.status)
+
+        self.report_line = QLabel()
+        self.report_line.setWordWrap(True)
+        hr2 = QHBoxLayout()
+        hr2.addWidget(self.report_line, 1)
+        self.btn_open_report = QPushButton("Open report")
+        self.btn_open_report.clicked.connect(lambda: self.last_report and open_file(self.last_report))
+        self.btn_open_report.setVisible(False)
+        hr2.addWidget(self.btn_open_report)
+        v.addLayout(hr2)
+        self.last_report = None
+        self._relay = _Relay()
+        self._relay.done.connect(self._report_done)
 
         self.setCentralWidget(root)
         self.fill_reeds()
@@ -466,6 +567,7 @@ class MainWindow(QMainWindow):
         self.status.setText(msg)
         self.status.setStyleSheet("color:#c62828" if clipped else "color:#2e7d32")
         self.clear_loudest()
+        self._start_report(path)
         # advance to the next exercise
         nxt = min(self.ex_group.checkedId() + 1, len(self.exercises) - 1)
         self.ex_group.button(nxt).setChecked(True)
@@ -485,7 +587,7 @@ class MainWindow(QMainWindow):
                 self, "Discard", f"Delete this recording?\n\n{name}") != QMessageBox.Yes:
             return
         path = self.rec.stop() if recording else self.last_saved[0]
-        for f in (path, path.with_suffix(".json")):
+        for f in (path, path.with_suffix(".json"), AN.analysis_path(path), RP.report_path(path)):
             try:
                 f.unlink()
             except OSError:
@@ -497,6 +599,46 @@ class MainWindow(QMainWindow):
         self.clock.setText("0:00")
         self.clear_loudest()
         self.refresh_labels()
+
+    def _start_report(self, wav: Path):
+        self.report_line.setText(f"Measuring {wav.name}…")
+        self.report_line.setStyleSheet("color:#444")
+        self.btn_open_report.setVisible(False)
+
+        def work():
+            try:
+                make_report(wav)
+                self._relay.done.emit(str(wav), "")
+            except Exception as e:
+                self._relay.done.emit(str(wav), str(e) or e.__class__.__name__)
+        threading.Thread(target=work, daemon=True).start()
+
+    def _report_done(self, wav: str, err: str):
+        wav = Path(wav)
+        if not wav.exists():          # discarded while it was being measured
+            for f in (AN.analysis_path(wav), RP.report_path(wav)):
+                try:
+                    f.unlink()
+                except OSError:
+                    pass
+            self.report_line.setText("")
+            return
+        if err:
+            self.report_line.setText(f"Could not measure {wav.name}: {err}")
+            self.report_line.setStyleSheet("color:#c62828")
+            return
+        try:
+            import json
+            s = json.loads(AN.analysis_path(wav).read_text(encoding="utf-8"))["summary"]
+            line = (f"{wav.stem}:  pitch error {s['cents_abs']:.1f} cents,  wobble {s['wobble_pct']:.2f}%,  "
+                    f"unsteadiness {s['steadiness_pct']:.1f}%,  buzz {s['buzz']:.3f},  "
+                    f"harmonic-to-noise {s['hnr_db']:.0f} dB.")
+        except Exception:
+            line = f"Report ready for {wav.name}."
+        self.report_line.setText(line)
+        self.report_line.setStyleSheet("color:#1f2328")
+        self.last_report = RP.report_path(wav)
+        self.btn_open_report.setVisible(True)
 
     def clear_loudest(self):
         if self.rec:

@@ -249,3 +249,44 @@ def test_startup_update_check(tmp_path, monkeypatch):
     wait_for(app, lambda: offered, 3)
     assert offered
     w.close()
+
+
+def test_report_after_save(tmp_path):
+    os.environ["APPDATA"] = str(tmp_path / "appdata")
+    from PySide6.QtWidgets import QApplication
+    app = QApplication.instance() or QApplication([])
+    from clarinet_tone.ui import MainWindow, ReportsDialog
+    from clarinet_tone import analysis as AN, report as RP
+    s = C.Settings(base_dir=str(tmp_path / "Clarinet tone"))
+    C.save_reeds(s.reeds_file, [C.Reed(started="2026-08-04", dots=1)])
+    w = MainWindow(s, mic_finder=lambda: MicChoice(0, "Blue Snowball", "MME", True), recorder_cls=FakeRecorder)
+    PLUGGED["on"] = True
+    w.start(); pump(app, 2.2); w.stop()
+    wav = w.last_saved[0]
+    assert wait_for(app, lambda: not w.btn_open_report.isHidden(), 20), w.report_line.text()
+    assert RP.report_path(wav).exists() and AN.analysis_path(wav).exists()
+    res = json.loads(AN.analysis_path(wav).read_text())
+    assert res["notes"] and res["notes"][0]["written"] == "C4" and abs(res["notes"][0]["cents"]) < 2
+    assert "pitch error" in w.report_line.text()
+    assert res["notes"][0]["buzz"] < 0.2            # a pure steady tone has no buzz
+    d = ReportsDialog(w, s.recordings_dir)
+    assert d.lst.count() == 1 and not d.btn_make.isEnabled()
+    w.discard(confirm=False)
+    assert not RP.report_path(wav).exists()
+    w.close()
+
+
+def test_missing_reports(tmp_path):
+    from PySide6.QtWidgets import QApplication
+    app = QApplication.instance() or QApplication([])
+    from clarinet_tone.ui import ReportsDialog
+    folder = tmp_path / "Recordings"; folder.mkdir()
+    t = np.arange(int(C.SAMPLE_RATE * 3)) / C.SAMPLE_RATE
+    for name, f in (("2026-11-05_1731_reed-0804_1_long-tone.wav", 196.0), ("2026-11-06_0900_reed-0804-1_long-tone-clarion.wav", 392.0)):
+        sf.write(folder / name, (0.4 * np.sin(2 * np.pi * f * t)).astype(np.float32), C.SAMPLE_RATE, subtype="PCM_24")
+    d = ReportsDialog(None, folder)
+    assert d.btn_make.isEnabled()
+    d.make_missing()
+    assert d.lst.count() == 2 and not d.btn_make.isEnabled()
+    html_text = (folder / "2026-11-05_1731_reed-0804_1_long-tone.report.html").read_text(encoding="utf-8")
+    assert "Long tones" in html_text and ">A3<" in html_text    # 196 Hz sounds G3, written A3
