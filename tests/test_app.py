@@ -136,3 +136,25 @@ def test_unplug(tmp_path):
     PLUGGED["on"] = True; pump(app, 2.6)
     assert w.btn_rec.isEnabled() and "✓" in w.mic_label.text()
     w.close()
+
+
+def test_start_without_snowball(tmp_path):
+    os.environ["APPDATA"] = str(tmp_path / "appdata")
+    from PySide6.QtWidgets import QApplication, QMessageBox
+    app = QApplication.instance() or QApplication([])
+    QMessageBox.warning = staticmethod(lambda *a, **k: None)
+    from clarinet_tone.ui import MainWindow
+    s = C.Settings(base_dir=str(tmp_path / "Clarinet tone"))
+    C.save_reeds(s.reeds_file, [C.Reed(started="2026-08-04", dots=1)])
+    PLUGGED["on"] = False
+    w = MainWindow(s, mic_finder=finder, recorder_cls=FakeRecorder, device_refresher=lambda: None)
+    pump(app, 0.5)
+    assert not w.btn_rec.isEnabled() and "not found" in w.mic_label.text()
+    # a webcam mic alone is not accepted
+    w.mic_finder = lambda: MicChoice(1, "Logitech webcam", "MME", False)
+    pump(app, 2.3)
+    assert not w.btn_rec.isEnabled()
+    w.mic_finder = finder
+    PLUGGED["on"] = True; pump(app, 2.3)
+    assert w.btn_rec.isEnabled() and "✓" in w.mic_label.text()
+    w.close()

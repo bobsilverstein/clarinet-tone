@@ -230,11 +230,17 @@ class MainWindow(QMainWindow):
             mic = self.mic_finder()
         except Exception:
             mic = None
-        if mic is None or (not first and not mic.found_snowball and self.rec and self.rec.mic.found_snowball):
-            # nothing usable (or only a fallback while the Snowball is missing)
+        if mic is None or not mic.found_snowball:
+            # Only the Snowball will do; keep looking for it every 2 seconds.
             self.mic_ok = False
             if first:
-                self.show_mic("Microphone: none found.  Plug in the Snowball.", False)
+                self.show_mic("Snowball microphone not found.  Plug it in; "
+                              "the program will find it on its own.", False)
+                QTimer.singleShot(300, lambda: QMessageBox.warning(
+                    self, "Microphone",
+                    "The Blue Snowball is not plugged in.\n\n"
+                    "Plug it in.  The program will find it within a few seconds, "
+                    "and the Record button will turn on."))
             return False
         try:
             if self.rec is None:
@@ -247,10 +253,7 @@ class MainWindow(QMainWindow):
             self.show_mic(f"Microphone could not open: {e}", False)
             return False
         self.mic_ok = True
-        if mic.found_snowball:
-            self.show_mic(f"Microphone: {mic.name}  ✓", True)
-        else:
-            self.show_mic(f"Snowball not found.  Using: {mic.name}", False)
+        self.show_mic(f"Microphone: {mic.name}  ✓", True)
         return True
 
     def watch_mic(self):
