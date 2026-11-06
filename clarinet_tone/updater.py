@@ -56,25 +56,24 @@ def download(url: str, dest: Path, progress=None) -> None:
 
 def install(new_file: Path, folder: Path) -> Path:
     """Put new_file in folder as ClarinetTone.exe.  A running copy there is
-    renamed first (Windows allows renaming a running .exe, not overwriting it)."""
+    renamed first (Windows allows renaming a running .exe, not overwriting it).
+    Each old copy gets its own name, so a copy still closing cannot block this."""
+    import time
     target = folder / EXE_NAME
-    old = folder / "ClarinetTone.old.exe"
+    clean_old(folder)
     if target.exists():
-        try:
-            old.unlink()
-        except OSError:
-            pass
-        target.replace(old)
+        target.replace(folder / f"ClarinetTone.old-{int(time.time())}.exe")
     new_file.replace(target)
     return target
 
 
 def clean_old(folder: Path) -> None:
-    """Remove the copy left behind by the last update."""
-    try:
-        (folder / "ClarinetTone.old.exe").unlink()
-    except OSError:
-        pass
+    """Remove copies left behind by earlier updates; skip any still in use."""
+    for f in list(folder.glob("ClarinetTone.old*.exe")):
+        try:
+            f.unlink()
+        except OSError:
+            pass
 
 
 def launch(exe: Path) -> None:

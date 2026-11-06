@@ -594,8 +594,11 @@ class MainWindow(QMainWindow):
                     f"You may delete this one:\n{running}")
         QMessageBox.information(self, "Update", f"Build {latest} is installed.  "
                                 "The program will now restart." + note)
+        if self.rec:
+            self.rec.close()
+            self.rec = None
         U.launch(exe)
-        self.close()
+        QApplication.quit()     # make sure this copy really exits
 
     def change_folder(self):
         if self.rec and self.rec.recording:

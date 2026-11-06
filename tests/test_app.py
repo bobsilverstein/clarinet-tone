@@ -224,10 +224,12 @@ def test_updater_install(tmp_path):
     from clarinet_tone import updater as U
     (tmp_path / "ClarinetTone.exe").write_text("old")
     new = tmp_path / "ClarinetTone.new.exe"; new.write_text("new")
+    (tmp_path / "ClarinetTone.old.exe").write_text("stale")
     exe = U.install(new, tmp_path)
-    assert exe.read_text() == "new" and (tmp_path / "ClarinetTone.old.exe").read_text() == "old"
+    olds = list(tmp_path.glob("ClarinetTone.old*.exe"))
+    assert exe.read_text() == "new" and [o.read_text() for o in olds] == ["old"]
     U.clean_old(tmp_path)
-    assert not (tmp_path / "ClarinetTone.old.exe").exists() and not new.exists()
+    assert not list(tmp_path.glob("ClarinetTone.old*.exe")) and not new.exists()
     assert U.current_build() >= 0
 
 
