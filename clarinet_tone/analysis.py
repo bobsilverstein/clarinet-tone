@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 from pathlib import Path
 
 import numpy as np
@@ -26,6 +27,10 @@ HOP_S = 0.010                       # 10 ms between pitch frames
 WIN = 2048                          # pitch window at 48 kHz (43 ms)
 YIN_THRESHOLD = 0.15
 FLATS = ["C", "D♭", "D", "E♭", "E", "F", "G♭", "G", "A♭", "A", "B♭", "B"]
+
+# Held while a recording file is open for reading, so "Discard" can wait for it
+# (Windows cannot delete a file another thread has open).
+READ_LOCK = threading.Lock()
 
 MEASURES = [  # key, label, unit, which direction is better (None = closer to zero / no judgment)
     ("cents_abs", "Pitch error", "cents", "lower"),
@@ -298,7 +303,8 @@ def analyze(wav: Path, progress=None) -> dict:
             meta = json.loads(side.read_text(encoding="utf-8"))
         except Exception:
             meta = {}
-    y, sr = sf.read(str(wav), dtype="float32", always_2d=True)
+    with READ_LOCK:
+        y, sr = sf.read(str(wav), dtype="float32", always_2d=True)
     y = y.mean(axis=1)
     f0, ap, rms, hop = track_pitch(y, sr, progress)
     ex = exercise_of(wav, meta)
