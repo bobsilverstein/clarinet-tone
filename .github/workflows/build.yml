@@ -26,6 +26,12 @@ jobs:
         run: python -m pytest -q tests
       - name: Build exe
         run: pyinstaller --noconfirm --onefile --windowed --name ClarinetTone run_app.py
+      - name: Check the packaged program starts
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath dist\ClarinetTone.exe -ArgumentList '--selftest' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { Get-Content "$env:APPDATA\ClarinetTone\error.log" -ErrorAction SilentlyContinue; exit 1 }
+          Get-Content "$env:APPDATA\ClarinetTone\selftest.txt"
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
