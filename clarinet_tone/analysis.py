@@ -314,12 +314,12 @@ def analyze(wav: Path, progress=None) -> dict:
     wav = Path(wav)
     meta = {}
     side = wav.with_suffix(".json")
-    if side.exists():
-        try:
-            meta = json.loads(side.read_text(encoding="utf-8"))
-        except Exception:
-            meta = {}
     with READ_LOCK:
+        if side.exists():
+            try:
+                meta = json.loads(side.read_text(encoding="utf-8"))
+            except Exception:
+                meta = {}
         y, sr = sf.read(str(wav), dtype="float32", always_2d=True)
     y = y.mean(axis=1)
     f0, ap, rms, hop = track_pitch(y, sr, progress)

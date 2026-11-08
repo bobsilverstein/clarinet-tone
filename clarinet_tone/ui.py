@@ -676,12 +676,20 @@ class MainWindow(QMainWindow):
                 self, "Discard", f"Delete this recording?\n\n{name}") != QMessageBox.Yes:
             return
         path = self.rec.stop() if recording else self.last_saved[0]
-        with AN.READ_LOCK:      # wait if the report is reading this file right now
-            for f in (path, path.with_suffix(".json"), AN.analysis_path(path), RP.report_path(path)):
-                try:
-                    f.unlink()
-                except OSError:
-                    pass
+        files = [path, path.with_suffix(".json"), AN.analysis_path(path), RP.report_path(path)]
+        for _ in range(20):     # Windows cannot delete a file another thread has open; try for up to 2 s
+            with AN.READ_LOCK:  # wait if the report is reading this file right now
+                for f in list(files):
+                    try:
+                        f.unlink()
+                        files.remove(f)
+                    except FileNotFoundError:
+                        files.remove(f)
+                    except OSError:
+                        pass
+            if not files:
+                break
+            time.sleep(0.1)
         self.last_saved = None
         self.ex_group.button(ex_index).setChecked(True)
         self.status.setText(f"Discarded {name}.")
