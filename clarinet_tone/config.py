@@ -82,10 +82,15 @@ class Settings:
     level_yellow_db: float = -6.0
     level_red_db: float = -2.0
     shortcut_made: bool = False
+    hearing_aids: bool = False          # last setting of the hearing-aids switch
 
     @property
     def recordings_dir(self) -> Path:
         return Path(self.base_dir) / "Recordings"
+
+    @property
+    def tests_dir(self) -> Path:
+        return self.recordings_dir / "Tests"
 
     @property
     def reeds_file(self) -> Path:
@@ -133,6 +138,15 @@ REGISTER = Exercise("register", "Register key / embouchure", "60 bpm, 2/4")
 
 def exercises_for(day: date) -> list[Exercise]:
     return [long_tone_for(day), LEGATO, REGISTER]
+
+
+TEST = Exercise("test", "Test", "whatever the test needs")
+
+
+def test_key(description: str) -> str:
+    """File-name key for a test take, e.g. "tuner check" -> "test-tuner-check"."""
+    words = re.sub(r"[^a-z0-9]+", "-", description.lower()).strip("-")
+    return f"test-{words[:40].rstrip('-')}" if words else "test"
 
 
 # ---------------------------------------------------------------- reeds

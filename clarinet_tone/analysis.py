@@ -2,8 +2,8 @@
 
 Every measure is dimensionless:
   pitch      cents from equal temperament (A = 440 Hz); cents are a frequency ratio
-  wobble     coefficient of variation of frequency, %
-  sag        change in frequency from the first third to the last third of the note, %
+  wobble     SD of pitch in cents while the note is held
+  sag        pitch change in cents from the first third to the last third of the note
   steadiness coefficient of variation of sound amplitude (not decibels), %
   brightness spectral centroid divided by the note's fundamental (1 = pure fundamental)
   buzz       loudness flutter at 20-150 Hz as a fraction of the average loudness (roughness)
@@ -21,7 +21,7 @@ from pathlib import Path
 import numpy as np
 import soundfile as sf
 
-VERSION = 1
+VERSION = 2                         # 2: wobble and sag in cents; hearing aids
 FMIN, FMAX = 140.0, 1900.0          # clarinet sounding range, with margin
 HOP_S = 0.010                       # 10 ms between pitch frames
 WIN = 2048                          # pitch window at 48 kHz (43 ms)
@@ -34,8 +34,8 @@ READ_LOCK = threading.Lock()
 
 MEASURES = [  # key, label, unit, which direction is better (None = closer to zero / no judgment)
     ("cents_abs", "Pitch error", "cents", "lower"),
-    ("wobble_pct", "Wobble", "%", "lower"),
-    ("sag_pct", "Sag", "%", None),
+    ("wobble_cents", "Wobble", "cents", "lower"),
+    ("sag_cents", "Sag", "cents", None),
     ("steadiness_pct", "Loudness unsteadiness", "%", "lower"),
     ("brightness", "Brightness", "× fundamental", None),
     ("buzz", "Buzz", "fraction", "lower"),
@@ -225,7 +225,7 @@ def measure_note(y, sr, f0, rms, hop, a, b, m):
     full = full[np.isfinite(full)]
     full = full[np.abs(1200 * np.log2(full / target) - np.median(cents)) < 60]
     thirds = np.array_split(full, 3) if len(full) >= 9 else [f, f, f]
-    sag = 100 * (np.median(thirds[2]) - np.median(thirds[0])) / np.median(thirds[0])
+    sag = 1200 * np.log2(np.median(thirds[2]) / np.median(thirds[0]))
     amp = rms[mid]
     s0, s1 = mid.start * hop, mid.stop * hop + WIN
     seg = y[s0:s1]
@@ -239,8 +239,8 @@ def measure_note(y, sr, f0, rms, hop, a, b, m):
         "freq_hz": round(fm, 2),
         "cents": round(float(np.median(cents)), 1),
         "cents_abs": round(abs(float(np.median(cents))), 1),
-        "wobble_pct": round(float(100 * np.std(f) / np.mean(f)), 3),
-        "sag_pct": round(float(sag), 3),
+        "wobble_cents": round(float(np.std(cents)), 2),
+        "sag_cents": round(float(sag), 2),
         "steadiness_pct": round(float(100 * np.std(amp) / max(np.mean(amp), 1e-12)), 2),
         "brightness": round(bright, 3),
         "buzz": round(_buzz(seg, sr, fm), 3),
@@ -252,6 +252,8 @@ def measure_note(y, sr, f0, rms, hop, a, b, m):
 # ----------------------------------------------------------------- whole take
 
 def exercise_of(wav: Path, meta: dict) -> str:
+    if wav.parent.name.lower() == "tests" and not is_test(meta.get("exercise", "")):
+        return "test"           # takes kept in Recordings\Tests are tests, whatever they were recorded as
     if meta.get("exercise"):
         return meta["exercise"]
     name = wav.stem.lower()
@@ -267,6 +269,20 @@ def reed_of(wav: Path, meta: dict) -> str:
         return r["label"]
     m = re.search(r"reed-(\d{4})[-_](\d)", wav.stem)
     return f"{m.group(1)}-{m.group(2)}" if m else "unknown"
+
+
+# Hearing aids for takes made before the program asked (from Bob's log).
+HEARING_AIDS_LOG = {"2026-11-05": False, "2026-11-06": False}
+
+
+def hearing_aids_of(wav: Path, meta: dict, taken: str):
+    if isinstance(meta.get("hearing_aids"), bool):
+        return meta["hearing_aids"]
+    return HEARING_AIDS_LOG.get(taken[:10])
+
+
+def is_test(exercise: str) -> bool:
+    return exercise == "test" or exercise.startswith("test-")
 
 
 def taken_at(wav: Path, meta: dict) -> str:
@@ -308,6 +324,7 @@ def analyze(wav: Path, progress=None) -> dict:
     y = y.mean(axis=1)
     f0, ap, rms, hop = track_pitch(y, sr, progress)
     ex = exercise_of(wav, meta)
+    taken = taken_at(wav, meta)
     min_dur = 1.0 if ex.startswith("long-tone") else 0.3
     notes = []
     for a, b, m in split_notes(f0, ap, rms, hop, sr, min_dur):
@@ -317,12 +334,14 @@ def analyze(wav: Path, progress=None) -> dict:
     return {
         "version": VERSION,
         "file": wav.name,
-        "taken": taken_at(wav, meta),
+        "taken": taken,
         "exercise": ex,
         "exercise_title": meta.get("exercise_title", ex),
         "reed": reed_of(wav, meta),
         "duration_s": round(len(y) / sr, 1),
         "microphone": meta.get("microphone", ""),
+        "hearing_aids": hearing_aids_of(wav, meta, taken),
+        "test_description": meta.get("test_description", ""),
         "notes": notes,
         "summary": summarize(notes),
     }
@@ -339,10 +358,24 @@ def save(result: dict, wav: Path) -> Path:
 
 
 def history(folder: Path) -> list[dict]:
+    """Earlier exercise sessions in this folder (test takes never count)."""
     out = []
     for p in sorted(Path(folder).glob("*.analysis.json")):
         try:
-            out.append(json.loads(p.read_text(encoding="utf-8")))
+            r = json.loads(p.read_text(encoding="utf-8"))
         except Exception:
-            pass
+            continue
+        if not is_test(r.get("exercise", "")):
+            out.append(r)
     return sorted(out, key=lambda r: r.get("taken", ""))
+
+
+def is_stale(wav: Path) -> bool:
+    """True when the recording has no analysis, or one made by an older version."""
+    p = analysis_path(wav)
+    if not p.exists():
+        return True
+    try:
+        return json.loads(p.read_text(encoding="utf-8")).get("version", 0) < VERSION
+    except Exception:
+        return True

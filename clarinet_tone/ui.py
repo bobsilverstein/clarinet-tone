@@ -25,12 +25,43 @@ class _Relay(QObject):
     progress = Signal(str)
 
 
+def stale_recordings(folder: Path, skip: Path | None = None) -> list[Path]:
+    """Recordings in folder (and its Tests subfolder) with no report or an out-of-date analysis."""
+    out = []
+    for d in (folder, folder / "Tests"):
+        if d.is_dir():
+            out += [w for w in sorted(d.glob("*.wav"))
+                    if w != skip and (AN.is_stale(w) or not RP.report_path(w).exists())]
+    return out
+
+
+def remake(wavs: list[Path], note=None) -> None:
+    """Measure all first, then write reports oldest first, so each compares with the ones before it."""
+    results = []
+    for i, w in enumerate(wavs, 1):
+        if note:
+            note(f"Measuring {i} of {len(wavs)}: {w.name}")
+        res = AN.analyze(w)
+        AN.save(res, w)
+        results.append((res.get("taken", ""), w, res))
+    for _, w, res in sorted(results, key=lambda t: t[0]):
+        RP.write(res, w)
+
+
 def make_report(wav: Path) -> dict:
-    """Measure one recording and write its analysis and report next to it."""
-    res = AN.analyze(wav)
-    AN.save(res, wav)
-    RP.write(res, wav)
+    """Measure one recording and write its analysis and report next to it.
+    Older sessions measured by an earlier version are measured again first,
+    so the comparisons use the same measures."""
+    base = wav.parent.parent if wav.parent.name.lower() == "tests" else wav.parent
+    with _REPORT_LOCK:          # one report at a time, even if two takes are saved close together
+        remake(stale_recordings(base, skip=wav))
+        res = AN.analyze(wav)
+        AN.save(res, wav)
+        RP.write(res, wav)
     return res
+
+
+_REPORT_LOCK = threading.Lock()
 
 
 def open_file(p: Path):
@@ -67,35 +98,31 @@ class ReportsDialog(QDialog):
         self.fill()
 
     def missing(self):
-        return [w for w in sorted(self.folder.glob("*.wav"))
-                if not RP.report_path(w).exists() or not AN.analysis_path(w).exists()]
+        return stale_recordings(self.folder)
 
     def fill(self):
         self.lst.clear()
-        for p in sorted(self.folder.glob("*.report.html"), reverse=True):
-            it = QListWidgetItem(p.name.replace(".report.html", ""))
+        reports = list(self.folder.glob("*.report.html")) + list((self.folder / "Tests").glob("*.report.html"))
+        for p in sorted(reports, key=lambda p: p.name, reverse=True):
+            tag = "   (test)" if p.parent.name.lower() == "tests" else ""
+            it = QListWidgetItem(p.name.replace(".report.html", "") + tag)
             it.setData(Qt.UserRole, str(p))
             self.lst.addItem(it)
         m = self.missing()
         self.btn_make.setEnabled(bool(m))
-        self.note.setText(f"{len(m)} recording(s) have no report yet." if m else "Every recording has a report.")
+        self.note.setText(f"{len(m)} recording(s) need a new or updated report." if m
+                          else "Every recording has an up-to-date report.")
 
     def make_missing(self):
         todo = self.missing()
         if not todo:
             return
         QApplication.setOverrideCursor(Qt.WaitCursor)
+        def note(text):
+            self.note.setText(text)
+            QApplication.processEvents()
         try:
-            # measure all first, then write reports oldest first so each compares with the ones before it
-            results = []
-            for i, w in enumerate(todo, 1):
-                self.note.setText(f"Measuring {i} of {len(todo)}: {w.name}")
-                QApplication.processEvents()
-                res = AN.analyze(w)
-                AN.save(res, w)
-                results.append((res.get("taken", ""), w, res))
-            for _, w, res in sorted(results, key=lambda t: t[0]):
-                RP.write(res, w)
+            remake(todo, note)
         except Exception as e:
             QMessageBox.warning(self, "Reports", f"Could not finish:\n{e}")
         finally:
@@ -255,9 +282,43 @@ class MainWindow(QMainWindow):
             b.setStyleSheet("QPushButton:checked{background:#1565c0;color:white;font-weight:bold}")
             self.ex_group.addButton(b, i)
             he.addWidget(b)
+        self.test_index = len(self.exercises)
+        b = QPushButton("Test")
+        b.setCheckable(True)
+        b.setMinimumHeight(56)
+        b.setStyleSheet("QPushButton:checked{background:#6a1b9a;color:white;font-weight:bold}")
+        self.ex_group.addButton(b, self.test_index)
+        he.addWidget(b)
         self.ex_group.button(0).setChecked(True)
         self.ex_group.idClicked.connect(lambda _: self.refresh_labels())
         v.addLayout(he)
+        ht = QHBoxLayout()
+        ht.addWidget(QLabel("Test description:"))
+        self.test_desc = QLineEdit()
+        self.test_desc.setPlaceholderText("for example, tuner check")
+        self.test_desc.textChanged.connect(lambda _: self.refresh_labels())
+        ht.addWidget(self.test_desc, 1)
+        self.test_row = QWidget()
+        self.test_row.setLayout(ht)
+        ht.setContentsMargins(0, 0, 0, 0)
+        v.addWidget(self.test_row)
+
+        # hearing aids, saved with every recording
+        hh = QHBoxLayout()
+        hh.addWidget(QLabel("Hearing aids:"))
+        self.ha_group = QButtonGroup(self)
+        self.ha_group.setExclusive(True)
+        for i, txt in ((0, "Off"), (1, "On")):
+            b = QPushButton(txt)
+            b.setCheckable(True)
+            b.setMinimumWidth(80)
+            b.setStyleSheet("QPushButton:checked{background:#1565c0;color:white;font-weight:bold}")
+            self.ha_group.addButton(b, i)
+            hh.addWidget(b)
+        hh.addStretch(1)
+        self.ha_group.button(1 if self.s.hearing_aids else 0).setChecked(True)
+        self.ha_group.idClicked.connect(self.set_hearing_aids)
+        v.addLayout(hh)
         self.tempo_label = QLabel()
         v.addWidget(self.tempo_label)
 
@@ -491,19 +552,35 @@ class MainWindow(QMainWindow):
         self.refresh_labels()
 
     # ------------------------------------------------------------ labels
+    def is_test(self) -> bool:
+        return self.ex_group.checkedId() == self.test_index
+
     def exercise(self) -> C.Exercise:
+        if self.is_test():
+            key = C.test_key(self.test_desc.text())
+            return C.Exercise(key, "Test", C.TEST.tempo)
         return self.exercises[self.ex_group.checkedId()]
+
+    def target_dir(self) -> Path:
+        return self.s.tests_dir if self.is_test() else self.s.recordings_dir
+
+    def set_hearing_aids(self, i: int):
+        self.s.hearing_aids = bool(i)
+        self.s.save()
 
     def refresh_labels(self):
         ex = self.exercise()
-        self.tempo_label.setText(f"Set your metronome to {ex.tempo}.")
+        test = self.is_test()
+        self.test_row.setVisible(test)
+        self.tempo_label.setText("Test take: saved in Recordings\\Tests; kept out of your exercise history."
+                                 if test else f"Set your metronome to {ex.tempo}.")
         r = self.current_reed()
         if r is None:
             self.file_label.setText("Add a reed before recording.")
         elif not (self.rec and self.rec.recording):
             name = C.recording_name(datetime.now(), r.label, ex.key)
             self.file_label.setText(f"Next file: {name}")
-        self.folder_label.setText(f"Folder: {self.s.recordings_dir}")
+        self.folder_label.setText(f"Folder: {self.target_dir()}")
         self.show_dots()
         self.update_buttons()
 
@@ -518,6 +595,9 @@ class MainWindow(QMainWindow):
                                  else "✕  Discard last")
         for b in self.ex_group.buttons():
             b.setEnabled(not recording)
+        for b in self.ha_group.buttons():
+            b.setEnabled(not recording)
+        self.test_desc.setEnabled(not recording)
         self.reed_box.setEnabled(not recording)
         for b in self.dots_group.buttons():
             b.setEnabled(not recording and self.current_reed() is not None)
@@ -530,8 +610,16 @@ class MainWindow(QMainWindow):
         if not (self.rec and r):
             return
         now = datetime.now()
-        path = C.unique_path(self.s.recordings_dir, C.recording_name(now, r.label, ex.key))
+        folder = self.target_dir()
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            QMessageBox.critical(self, "Record", f"Could not make the folder {folder}:\n{e}")
+            return
+        path = C.unique_path(folder, C.recording_name(now, r.label, ex.key))
         meta = {"exercise": ex.key, "exercise_title": ex.title, "tempo": ex.tempo,
+                "hearing_aids": bool(self.ha_group.checkedId() == 1),
+                "test_description": self.test_desc.text().strip() if self.is_test() else "",
                 "reed": {"label": r.label, "started": r.started, "dots": r.dots,
                          "brand": r.brand, "model": r.model, "strength": r.strength}}
         try:
@@ -568,9 +656,10 @@ class MainWindow(QMainWindow):
         self.status.setStyleSheet("color:#c62828" if clipped else "color:#2e7d32")
         self.clear_loudest()
         self._start_report(path)
-        # advance to the next exercise
-        nxt = min(self.ex_group.checkedId() + 1, len(self.exercises) - 1)
-        self.ex_group.button(nxt).setChecked(True)
+        # advance to the next exercise (a test take stays on Test)
+        if not self.is_test():
+            nxt = min(self.ex_group.checkedId() + 1, len(self.exercises) - 1)
+            self.ex_group.button(nxt).setChecked(True)
         self.refresh_labels()
 
     def discard(self, confirm: bool = True):
@@ -602,7 +691,11 @@ class MainWindow(QMainWindow):
         self.refresh_labels()
 
     def _start_report(self, wav: Path):
-        self.report_line.setText(f"Measuring {wav.name}…")
+        base = wav.parent.parent if wav.parent.name.lower() == "tests" else wav.parent
+        old = len(stale_recordings(base, skip=wav))
+        extra = (f"  First, {old} earlier recording(s) are measured again with the new measures; "
+                 "this may take a minute or two.") if old else ""
+        self.report_line.setText(f"Measuring {wav.name}…{extra}")
         self.report_line.setStyleSheet("color:#444")
         self.btn_open_report.setVisible(False)
 
@@ -631,7 +724,7 @@ class MainWindow(QMainWindow):
         try:
             import json
             s = json.loads(AN.analysis_path(wav).read_text(encoding="utf-8"))["summary"]
-            line = (f"{wav.stem}:  pitch error {s['cents_abs']:.1f} cents,  wobble {s['wobble_pct']:.2f}%,  "
+            line = (f"{wav.stem}:  pitch error {s['cents_abs']:.1f} cents,  wobble {s['wobble_cents']:.1f} cents,  "
                     f"unsteadiness {s['steadiness_pct']:.1f}%,  buzz {s['buzz']:.3f},  "
                     f"harmonic-to-noise {s['hnr_db']:.0f} dB.")
         except Exception:
@@ -666,8 +759,8 @@ class MainWindow(QMainWindow):
 
         class Relay(QObject):
             found = Signal(int)
-        self._relay = Relay()
-        self._relay.found.connect(self._offer_update)
+        self._upd_relay = Relay()     # must not replace self._relay, which carries "report done"
+        self._upd_relay.found.connect(self._offer_update)
 
         def work():
             try:
@@ -675,7 +768,7 @@ class MainWindow(QMainWindow):
             except Exception:
                 return      # no internet: say nothing
             if latest > U.current_build():
-                self._relay.found.emit(latest)
+                self._upd_relay.found.emit(latest)
         threading.Thread(target=work, daemon=True).start()
 
     def _offer_update(self, latest: int):

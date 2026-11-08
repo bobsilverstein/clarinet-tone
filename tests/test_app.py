@@ -290,3 +290,73 @@ def test_missing_reports(tmp_path):
     assert d.lst.count() == 2 and not d.btn_make.isEnabled()
     html_text = (folder / "2026-11-05_1731_reed-0804_1_long-tone.report.html").read_text(encoding="utf-8")
     assert "Long tones" in html_text and ">A3<" in html_text    # 196 Hz sounds G3, written A3
+
+
+def test_build18_features(tmp_path, monkeypatch):
+    """Hearing aids, test mode, cents units, and the report reaching the window
+    even after the startup update check has run."""
+    os.environ["APPDATA"] = str(tmp_path / "appdata")
+    from PySide6.QtWidgets import QApplication
+    app = QApplication.instance() or QApplication([])
+    from clarinet_tone import updater as U, analysis as AN, report as RP
+    from clarinet_tone.ui import MainWindow, ReportsDialog
+    monkeypatch.setattr(U, "current_build", lambda: 5)
+    monkeypatch.setattr(U, "latest_release", lambda: (5, "http://x"))
+    s = C.Settings(base_dir=str(tmp_path / "Clarinet tone"))
+    C.save_reeds(s.reeds_file, [C.Reed(started="2026-08-04", dots=2)])
+    w = MainWindow(s, mic_finder=lambda: MicChoice(0, "Blue Snowball", "MME", True), recorder_cls=FakeRecorder)
+    w.start_update_check()
+    pump(app, 0.5)
+    PLUGGED["on"] = True
+    # hearing aids on, normal exercise
+    w.ha_group.button(1).click()
+    assert C.Settings.load().hearing_aids is True
+    w.start(); pump(app, 2.2); w.stop()
+    wav = w.last_saved[0]
+    assert wait_for(app, lambda: not w.btn_open_report.isHidden(), 20), w.report_line.text()
+    assert "Measuring" not in w.report_line.text() and "wobble" in w.report_line.text()
+    res = json.loads(AN.analysis_path(wav).read_text())
+    assert res["version"] == AN.VERSION and res["hearing_aids"] is True
+    n = res["notes"][0]
+    assert "wobble_cents" in n and "sag_cents" in n and n["wobble_cents"] < 1
+    page = RP.report_path(wav).read_text(encoding="utf-8")
+    assert "Hearing aids on" in page and "center of gravity" not in page.lower()
+    assert ">Unit<" not in page and " cents</td>" in page and "Wobble, cents" in page
+    # test take
+    w.ex_group.button(w.test_index).click()
+    assert not w.test_row.isHidden()
+    w.test_desc.setText("Tuner check!")
+    w.ha_group.button(0).click()
+    w.start(); pump(app, 2.2); w.stop()
+    tw = w.last_saved[0]
+    assert tw.parent == s.tests_dir and tw.name.endswith("_test-tuner-check.wav"), tw
+    assert w.is_test()                       # stays on Test
+    assert wait_for(app, lambda: RP.report_path(tw).exists() and not w.btn_open_report.isHidden()
+                    and w.last_report == RP.report_path(tw), 20)
+    tres = json.loads(AN.analysis_path(tw).read_text())
+    assert AN.is_test(tres["exercise"]) and tres["hearing_aids"] is False
+    tpage = RP.report_path(tw).read_text(encoding="utf-8")
+    assert "Test: Tuner check!" in tpage and "This reed, last 5" not in tpage
+    assert all(not AN.is_test(r["exercise"]) for r in AN.history(s.recordings_dir))
+    d = ReportsDialog(w, s.recordings_dir)
+    assert d.lst.count() == 2 and not d.btn_make.isEnabled()
+    w.close()
+
+
+def test_old_sessions_remeasured(tmp_path):
+    """Analyses from version 1 (wobble in %) are measured again before a new report."""
+    from clarinet_tone import analysis as AN
+    from clarinet_tone.ui import make_report, stale_recordings
+    folder = tmp_path / "Recordings"; folder.mkdir()
+    t = np.arange(int(C.SAMPLE_RATE * 3)) / C.SAMPLE_RATE
+    old = folder / "2026-11-05_1731_reed-0804-1_legato.wav"
+    new = folder / "2026-11-06_1702_reed-0804-1_legato.wav"
+    for p in (old, new):
+        sf.write(p, (0.4 * np.sin(2 * np.pi * 261.6 * t)).astype(np.float32), C.SAMPLE_RATE, subtype="PCM_24")
+    AN.analysis_path(old).write_text(json.dumps({"version": 1, "summary": {"wobble_pct": 0.1}}))
+    assert stale_recordings(folder) == [old, new]
+    make_report(new)
+    r = json.loads(AN.analysis_path(old).read_text())
+    assert r["version"] == AN.VERSION and "wobble_cents" in r["summary"] and r["hearing_aids"] is False
+    assert stale_recordings(folder) == []
+    assert C.test_key("  tuner check ") == "test-tuner-check" and C.test_key("!!") == "test"

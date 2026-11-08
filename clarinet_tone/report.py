@@ -7,29 +7,42 @@ from pathlib import Path
 
 import numpy as np
 
-from .analysis import MEASURES, history
+from .analysis import MEASURES, history, is_test
 
 INK, MUTED, GRID, BAR, NEG = "#1f2328", "#5f6670", "#e4e7eb", "#2f6fbf", "#c2552d"
 
 EXPLAIN = {
     "cents_abs": "How far each note sits from equal temperament (A = 440 Hz), ignoring sharp or flat.  100 cents = one half step.",
-    "wobble_pct": "Coefficient of variation of the frequency while you hold the note (SD ÷ mean).",
-    "sag_pct": "Frequency change from the first third to the last third of the note.  Negative means the pitch dropped.",
+    "wobble_cents": "How much the pitch wavers while you hold the note: the standard deviation of the pitch, in cents.",
+    "sag_cents": "Pitch change from the first third to the last third of the note, in cents.  Negative means the pitch dropped.",
     "steadiness_pct": "Coefficient of variation of the sound amplitude (SD ÷ mean), on raw amplitude, not decibels.",
-    "brightness": "Center of gravity of the harmonics, in multiples of the note's own frequency.  Higher means brighter.",
+    "brightness": "The average harmonic number, with each harmonic counted in proportion to its strength.  1 would mean only the fundamental; higher means more energy in the upper harmonics, a brighter sound.",
     "buzz": "Size of the loudness flutter at 20 to 150 times per second, the rate the ear hears as a rattle or buzz, as a fraction of the average loudness.  0 means none.",
     "hnr_db": "Power in the harmonics versus the hiss between them, as a ratio in decibels.  Higher means cleaner.",
 }
 
 
+UNITS = {key: unit for key, _, unit, _ in MEASURES}
+UNITS["cents"] = "cents"
+
+
 def _fmt(v, key):
     if v is None or (isinstance(v, float) and not np.isfinite(v)):
         return "–"
-    if key in ("wobble_pct", "sag_pct", "buzz"):
+    if key == "buzz":
         return f"{v:.3f}"
-    if key == "brightness":
+    if key in ("brightness", "wobble_cents", "sag_cents"):
         return f"{v:.2f}"
     return f"{v:.1f}"
+
+
+def _fmtu(v, key):
+    """Number followed by its unit, e.g. "12.3 cents"."""
+    s = _fmt(v, key)
+    u = UNITS.get(key, "")
+    if s == "–" or u in ("", "fraction"):
+        return s
+    return f"{s} {u}" if u != "%" else f"{s} %"
 
 
 def _stats(rows, key):
@@ -44,8 +57,8 @@ def _compare_cell(today, st, key):
     if st is None:
         return "<td class=num>no earlier data</td>"
     mean, sd, n = st
-    txt = f"{_fmt(mean, key)} ± {_fmt(sd, key)} <span class=muted>(n = {n})</span>" if n > 1 \
-        else f"{_fmt(mean, key)} <span class=muted>(n = 1)</span>"
+    txt = f"{_fmt(mean, key)} ± {_fmtu(sd, key)} <span class=muted>(n = {n})</span>" if n > 1 \
+        else f"{_fmtu(mean, key)} <span class=muted>(n = 1)</span>"
     flag = ""
     if today is not None and n >= 3 and np.isfinite(sd) and sd > 0:
         z = (today - mean) / sd
@@ -62,7 +75,7 @@ def _by_note(notes):
     for m in sorted(groups):
         g = groups[m]
         row = {"written": g[0]["written"], "count": len(g)}
-        for key in ("cents", "wobble_pct", "sag_pct", "steadiness_pct", "brightness", "buzz", "hnr_db"):
+        for key in ("cents", "wobble_cents", "sag_cents", "steadiness_pct", "brightness", "buzz", "hnr_db"):
             v = np.array([x[key] for x in g], float)
             v = v[np.isfinite(v)]
             row[key] = float(np.median(v)) if len(v) else float("nan")
@@ -141,7 +154,8 @@ def _bar_chart(rows, key, title, unit, signed):
 
 
 def build(result: dict, folder: Path) -> str:
-    past = [r for r in history(folder)
+    test = is_test(result.get("exercise", ""))
+    past = [] if test else [r for r in history(folder)
             if r.get("exercise") == result["exercise"] and r.get("file") != result["file"]
             and r.get("taken", "") < result.get("taken", "~")]
     same = [r for r in past if r.get("reed") == result["reed"]][-5:]
@@ -158,26 +172,41 @@ def build(result: dict, folder: Path) -> str:
     rows = []
     for key, label, unit, better in MEASURES:
         today = s.get(key)
+        cmp = "" if test else (_compare_cell(today, _stats(same, key), key)
+                               + _compare_cell(today, _stats(alls, key), key))
         rows.append(
             f"<tr><td><b>{label}</b><div class=muted>{EXPLAIN[key]}</div></td>"
-            f"<td class=num>{html.escape(unit)}</td>"
-            f"<td class='num today'>{_fmt(today, key)}</td>"
-            + _compare_cell(today, _stats(same, key), key)
-            + _compare_cell(today, _stats(alls, key), key) + "</tr>")
+            f"<td class='num today'>{_fmtu(today, key)}</td>" + cmp + "</tr>")
 
     bn = _by_note(result["notes"])
     note_rows = "".join(
         f"<tr><td>{html.escape(r['written'])}</td><td class=num>{r['count']}</td>"
-        f"<td class=num>{r['cents']:+.1f}</td><td class=num>{_fmt(r['wobble_pct'],'wobble_pct')}</td>"
-        f"<td class=num>{_fmt(r['sag_pct'],'sag_pct')}</td><td class=num>{_fmt(r['steadiness_pct'],'steadiness_pct')}</td>"
+        f"<td class=num>{r['cents']:+.1f}</td><td class=num>{_fmt(r['wobble_cents'],'wobble_cents')}</td>"
+        f"<td class=num>{_fmt(r['sag_cents'],'sag_cents')}</td><td class=num>{_fmt(r['steadiness_pct'],'steadiness_pct')}</td>"
         f"<td class=num>{_fmt(r['brightness'],'brightness')}</td><td class=num>{_fmt(r['buzz'],'buzz')}</td>"
         f"<td class=num>{_fmt(r['hnr_db'],'hnr_db')}</td></tr>" for r in bn)
 
-    head = html.escape(TITLES.get(result["exercise"], result.get("exercise_title") or result["exercise"]))
+    if test:
+        desc = result.get("test_description") or result["file"].rsplit("_", 1)[-1].removesuffix(".wav")
+        head = html.escape(f"Test: {desc}")
+    else:
+        head = html.escape(TITLES.get(result["exercise"], result.get("exercise_title") or result["exercise"]))
     sub = (f"{when} &nbsp;·&nbsp; Reed {html.escape(result['reed'])} &nbsp;·&nbsp; "
            f"{int(result['duration_s'] // 60)}:{int(result['duration_s'] % 60):02d} long &nbsp;·&nbsp; "
            f"{len(result['notes'])} held notes found")
     mic = f" &nbsp;·&nbsp; {html.escape(result['microphone'])}" if result.get("microphone") else ""
+    ha = result.get("hearing_aids")
+    mic += " &nbsp;·&nbsp; Hearing aids " + ("on" if ha else "off" if ha is False else "not recorded")
+    if test:
+        intro = ("<p class=note>This is a test take.  Each value is the duration-weighted median over all held notes.  "
+                 "Test takes never enter your exercise history or comparisons.</p>")
+        cols = "<tr><th>Measure</th><th class=num>Today</th></tr>"
+    else:
+        intro = ("<p class=note>Each value is the duration-weighted median over all held notes.  The two comparison columns give the\n"
+                 "mean ± SD of the last five sessions of this exercise: first on this reed only (aging), then on all reeds (ranking).\n"
+                 "A mark appears when today falls 2 or more SD from that mean, with at least three earlier sessions.</p>")
+        cols = ("<tr><th>Measure</th><th class=num>Today</th><th class=num>This reed, last 5</th>"
+                "<th class=num>All reeds, last 5</th></tr>")
 
     return f"""<!DOCTYPE html>
 <html lang=en><head><meta charset=utf-8><title>{head} – {html.escape(result['file'])}</title>
@@ -196,10 +225,8 @@ th{{font-size:12pt;color:{MUTED};font-weight:600}} .num{{text-align:right;white-
 <div class=muted>{sub}{mic}<br>{html.escape(result['file'])}</div>
 
 <h2>Summary</h2>
-<p class=note>Each value is the duration-weighted median over all held notes.  The two comparison columns give the
-mean ± SD of the last five sessions of this exercise: first on this reed only (aging), then on all reeds (ranking).
-A mark appears when today falls 2 or more SD from that mean, with at least three earlier sessions.</p>
-<table><tr><th>Measure</th><th class=num>Unit</th><th class=num>Today</th><th class=num>This reed, last 5</th><th class=num>All reeds, last 5</th></tr>
+{intro}
+<table>{cols}
 {''.join(rows)}</table>
 <p class=muted>Average pitch today: {s.get('cents_signed', float('nan')):+.1f} cents (negative = flat).</p>
 
@@ -207,8 +234,8 @@ A mark appears when today falls 2 or more SD from that mean, with at least three
 {_bar_chart(bn, 'cents', 'Pitch by written note (negative = flat)', 'cents', True)}
 {_bar_chart(bn, 'hnr_db', 'Harmonic-to-noise by written note (higher = cleaner)', 'dB', False)}
 {_bar_chart(bn, 'buzz', 'Buzz by written note (lower = smoother)', 'fraction', False)}
-<table><tr><th>Note</th><th class=num>Times</th><th class=num>Pitch, cents</th><th class=num>Wobble, %</th>
-<th class=num>Sag, %</th><th class=num>Unsteadiness, %</th><th class=num>Brightness</th><th class=num>Buzz</th><th class=num>H/N, dB</th></tr>
+<table><tr><th>Note</th><th class=num>Times</th><th class=num>Pitch, cents</th><th class=num>Wobble, cents</th>
+<th class=num>Sag, cents</th><th class=num>Unsteadiness, %</th><th class=num>Brightness</th><th class=num>Buzz</th><th class=num>H/N, dB</th></tr>
 {note_rows}</table>
 <p class=muted>Note names are written pitch for B-flat clarinet.  Values per note are medians over every time you played it.</p>
 </body></html>"""
