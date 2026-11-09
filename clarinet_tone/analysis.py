@@ -249,6 +249,46 @@ def measure_note(y, sr, f0, rms, hop, a, b, m):
     }
 
 
+# ----------------------------------------------------------------- live
+
+LIVE_SAMPLES = 16384        # about 1/3 second at 48 kHz
+
+
+def live_brightness(x: np.ndarray, sr: int, floor_db: float = -45.0):
+    """Brightness of the sound right now.  Returns (written note, cents, brightness)
+    or None when no steady note is sounding."""
+    if len(x) < LIVE_SAMPLES:
+        return None
+    x = x[-LIVE_SAMPLES:].astype(np.float64)
+    if 20 * np.log10(np.sqrt(np.mean(x * x)) + 1e-12) < floor_db:
+        return None
+    # pitch from three frames across the window; they must agree (a steady note)
+    starts = np.linspace(0, len(x) - WIN, 3).astype(int)
+    f, ap = _yin_block(np.stack([x[s:s + WIN] for s in starts]), sr)
+    if not (np.all(np.isfinite(f)) and np.all(ap < 0.25)):
+        return None
+    if np.ptp(1200 * np.log2(f / np.median(f))) > 40:
+        return None
+    f0 = float(np.median(f))
+    if not FMIN <= f0 <= FMAX:
+        return None
+    midi = 69 + 12 * np.log2(f0 / 440.0)
+    m = int(round(midi))
+    bright, _ = _spectrum_measures(x, sr, f0)
+    return written_name(m), round(100 * (midi - m), 1), round(bright, 2)
+
+
+def usual_brightness(folder: Path, sessions: int = 10) -> dict:
+    """Median brightness per written note over the last few exercise sessions."""
+    by = {}
+    for r in history(folder)[-sessions:]:
+        for n in r.get("notes", []):
+            v = n.get("brightness")
+            if v is not None and np.isfinite(v):
+                by.setdefault(n["written"], []).append(v)
+    return {k: round(float(np.median(v)), 2) for k, v in by.items()}
+
+
 # ----------------------------------------------------------------- whole take
 
 def exercise_of(wav: Path, meta: dict) -> str:

@@ -121,6 +121,16 @@ class Recorder:
         self.last_callback = 0.0
         self.silent_since = None
         self.stream_error = ""
+        self._ring = np.zeros(SAMPLE_RATE, np.float32)    # last second of sound, for live displays
+        self._ring_pos = 0
+        self._ring_lock = threading.Lock()
+
+    def recent(self, n: int) -> np.ndarray:
+        """The newest n samples heard by the mic (recording or not)."""
+        n = min(n, len(self._ring))
+        with self._ring_lock:
+            r = np.roll(self._ring, -self._ring_pos)
+        return r[-n:].copy()
 
     # ------------------------------------------------------------ stream
     def open(self) -> None:
@@ -186,6 +196,20 @@ class Recorder:
         else:
             self.silent_since = None
         self.meter.update(block)
+        with self._ring_lock:
+            k = len(block)
+            if k >= len(self._ring):
+                self._ring[:] = block[-len(self._ring):]
+                self._ring_pos = 0
+            else:
+                end = self._ring_pos + k
+                if end <= len(self._ring):
+                    self._ring[self._ring_pos:end] = block
+                else:
+                    cut = len(self._ring) - self._ring_pos
+                    self._ring[self._ring_pos:] = block[:cut]
+                    self._ring[:k - cut] = block[cut:]
+                self._ring_pos = end % len(self._ring)
         if self._recording and not self._paused:
             self._q.put(block)
 

@@ -130,6 +130,144 @@ class ReportsDialog(QDialog):
         self.fill()
 from .recorder import Recorder, choose_mic, refresh_devices
 
+
+class BrightnessChart(QWidget):
+    """Scrolling chart of brightness over the last SPAN seconds."""
+    SPAN = 30.0
+
+    def __init__(self):
+        super().__init__()
+        self.points = []            # (time, brightness or None)
+        self.usual = None
+        self.setMinimumHeight(260)
+
+    def add(self, t: float, v):
+        self.points.append((t, v))
+        while self.points and self.points[0][0] < t - self.SPAN:
+            self.points.pop(0)
+        self.update()
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        W, H = self.width(), self.height()
+        L, R, T, B = 50, 10, 10, 26
+        p.fillRect(0, 0, W, H, QColor("white"))
+        vals = [v for _, v in self.points if v is not None]
+        if self.usual is not None:
+            vals.append(self.usual)
+        hi = max(vals) if vals else 4.0
+        lo = min(vals) if vals else 1.0
+        span = max(hi - lo, 0.5)
+        step = RP._nice_step(span / 4)
+        import math
+        lo = max(1.0, math.floor(lo / step) * step)
+        hi = max(math.ceil(hi / step) * step, lo + step)
+        y = lambda v: T + (hi - v) / (hi - lo) * (H - T - B)
+        now = self.points[-1][0] if self.points else 0.0
+        x = lambda tt: L + (tt - (now - self.SPAN)) / self.SPAN * (W - L - R)
+        p.setPen(QColor("#e4e7eb"))
+        f = p.font(); f.setPointSize(10); p.setFont(f)
+        v = lo
+        while v <= hi + 1e-9:
+            p.setPen(QColor("#e4e7eb")); p.drawLine(L, int(y(v)), W - R, int(y(v)))
+            p.setPen(QColor("#5f6670")); p.drawText(4, int(y(v)) + 4, f"{v:g}")
+            v += step
+        for s in range(0, int(self.SPAN) + 1, 5):
+            xx = x(now - s)
+            p.setPen(QColor("#5f6670"))
+            p.drawText(int(xx) - 14, H - 6, f"-{s}s" if s else "now")
+        if self.usual is not None:
+            from PySide6.QtGui import QPen
+            pen = QPen(QColor("#c2552d")); pen.setStyle(Qt.DashLine); pen.setWidth(2)
+            p.setPen(pen)
+            p.drawLine(L, int(y(self.usual)), W - R, int(y(self.usual)))
+        from PySide6.QtGui import QPen
+        pen = QPen(QColor("#2f6fbf")); pen.setWidth(3)
+        p.setPen(pen)
+        prev = None
+        for tt, v in self.points:
+            if v is None:
+                prev = None
+                continue
+            pt = (int(x(tt)), int(y(v)))
+            if prev:
+                p.drawLine(prev[0], prev[1], pt[0], pt[1])
+            else:
+                p.drawPoint(pt[0], pt[1])
+            prev = pt
+        p.end()
+
+
+class LiveBrightness(QDialog):
+    """Shows brightness of the note you are playing, about 10 times a second."""
+
+    def __init__(self, parent, get_rec, folder: Path):
+        super().__init__(parent)
+        self.setWindowTitle("Live brightness")
+        self.get_rec = get_rec
+        self.usual = AN.usual_brightness(folder)
+        self.recent = []
+        self.t0 = time.time()
+        self.resize(820, 520)
+        v = QVBoxLayout(self)
+        self.big = QLabel("–")
+        self.big.setAlignment(Qt.AlignCenter)
+        bf = QFont(self.font()); bf.setPointSize(48); bf.setBold(True)
+        self.big.setFont(bf)
+        v.addWidget(self.big)
+        self.note = QLabel("Play a note.")
+        self.note.setAlignment(Qt.AlignCenter)
+        nf = QFont(self.font()); nf.setPointSize(18)
+        self.note.setFont(nf)
+        v.addWidget(self.note)
+        self.usual_label = QLabel("")
+        self.usual_label.setAlignment(Qt.AlignCenter)
+        self.usual_label.setStyleSheet("color:#c2552d")
+        v.addWidget(self.usual_label)
+        self.chart = BrightnessChart()
+        v.addWidget(self.chart, 1)
+        hint = QLabel("Blue line: brightness over the last 30 seconds.  Dashed line: your usual brightness "
+                      "on this note (median of your last 10 sessions).  Higher means brighter.")
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color:#5f6670")
+        v.addWidget(hint)
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.tick)
+        self.timer.start(100)
+
+    def tick(self):
+        rec = self.get_rec()
+        now = time.time() - self.t0
+        if rec is None:
+            self.note.setText("No microphone.")
+            self.chart.add(now, None)
+            return
+        try:
+            r = AN.live_brightness(rec.recent(AN.LIVE_SAMPLES), C.SAMPLE_RATE)
+        except Exception:
+            r = None
+        if r is None:
+            self.recent.clear()
+            self.chart.add(now, None)
+            self.big.setStyleSheet("color:#9aa0a6")
+            return
+        name, cents, b = r
+        self.recent = (self.recent + [(name, b)])[-3:]
+        same = [x for n, x in self.recent if n == name]
+        shown = sorted(same)[len(same) // 2]
+        self.big.setText(f"{shown:.2f}")
+        self.big.setStyleSheet("color:#1f2328")
+        self.note.setText(f"Written {name}   {cents:+.0f} cents")
+        u = self.usual.get(name)
+        self.chart.usual = u
+        self.usual_label.setText(f"Your usual on {name}: {u:.2f}" if u is not None else "")
+        self.chart.add(now, b)
+
+    def done(self, r):
+        self.timer.stop()
+        super().done(r)
+
 FONT_PT = 14
 
 
@@ -373,6 +511,9 @@ class MainWindow(QMainWindow):
         rpt = QPushButton("Reports…")
         rpt.clicked.connect(lambda: ReportsDialog(self, self.s.recordings_dir).exec())
         hf.addWidget(rpt)
+        live = QPushButton("Live brightness…")
+        live.clicked.connect(self.show_live)
+        hf.addWidget(live)
         upd = QPushButton("Check for update")
         upd.clicked.connect(self.check_update)
         hf.addWidget(upd)
@@ -563,6 +704,13 @@ class MainWindow(QMainWindow):
 
     def target_dir(self) -> Path:
         return self.s.tests_dir if self.is_test() else self.s.recordings_dir
+
+    def show_live(self):
+        if getattr(self, "live", None) is None:
+            self.live = LiveBrightness(self, lambda: self.rec if self.mic_ok else None, self.s.recordings_dir)
+            self.live.finished.connect(lambda _: setattr(self, "live", None))
+        self.live.show()
+        self.live.raise_()
 
     def set_hearing_aids(self, i: int):
         self.s.hearing_aids = bool(i)

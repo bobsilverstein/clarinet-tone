@@ -360,3 +360,30 @@ def test_old_sessions_remeasured(tmp_path):
     assert r["version"] == AN.VERSION and "wobble_cents" in r["summary"] and r["hearing_aids"] is False
     assert stale_recordings(folder) == []
     assert C.test_key("  tuner check ") == "test-tuner-check" and C.test_key("!!") == "test"
+
+
+def test_live_brightness(tmp_path):
+    from clarinet_tone import analysis as AN
+    sr = C.SAMPLE_RATE
+    t = np.arange(AN.LIVE_SAMPLES) / sr
+    f0 = 466.16                                   # sounding B-flat 4 = written C5
+    dull = 0.5 * np.sin(2 * np.pi * f0 * t)
+    bright = sum((0.5 / k) * np.sin(2 * np.pi * k * f0 * t) for k in range(1, 9))
+    a, b = AN.live_brightness(dull, sr), AN.live_brightness(bright, sr)
+    assert a[0] == "C5" and abs(a[1]) < 2 and a[2] < 1.1
+    assert b[0] == "C5" and b[2] > a[2] + 1
+    assert AN.live_brightness(np.zeros(AN.LIVE_SAMPLES), sr) is None
+    # window opens and shows a reading from the simulated mic (written C4)
+    os.environ["APPDATA"] = str(tmp_path / "appdata")
+    from PySide6.QtWidgets import QApplication
+    app = QApplication.instance() or QApplication([])
+    from clarinet_tone.ui import MainWindow
+    s = C.Settings(base_dir=str(tmp_path / "Clarinet tone"))
+    C.save_reeds(s.reeds_file, [C.Reed(started="2026-08-04", dots=1)])
+    PLUGGED["on"] = True
+    w = MainWindow(s, mic_finder=lambda: MicChoice(0, "Blue Snowball", "MME", True), recorder_cls=FakeRecorder)
+    w.show_live()
+    assert wait_for(app, lambda: "C4" in w.live.note.text(), 5), w.live.note.text()
+    assert float(w.live.big.text()) < 1.2
+    w.live.grab().save(str(tmp_path / "live.png"))
+    w.live.close(); w.close()
