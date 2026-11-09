@@ -131,15 +131,18 @@ class ReportsDialog(QDialog):
 from .recorder import Recorder, choose_mic, refresh_devices
 
 
-class BrightnessChart(QWidget):
-    """Scrolling chart of brightness over the last SPAN seconds."""
+class LiveChart(QWidget):
+    """Scrolling chart of one value over the last SPAN seconds, with an optional
+    dashed reference line.  Give lo and hi for a fixed scale; otherwise it fits the data."""
     SPAN = 30.0
 
-    def __init__(self):
+    def __init__(self, title: str, color: str, lo=None, hi=None, step=None, floor=None):
         super().__init__()
-        self.points = []            # (time, brightness or None)
-        self.usual = None
-        self.setMinimumHeight(260)
+        self.title, self.color = title, color
+        self.lo, self.hi, self.step, self.floor = lo, hi, step, floor
+        self.points = []            # (time, value or None)
+        self.ref = None             # dashed reference line
+        self.setMinimumHeight(170)
 
     def add(self, t: float, v):
         self.points.append((t, v))
@@ -147,43 +150,52 @@ class BrightnessChart(QWidget):
             self.points.pop(0)
         self.update()
 
+    def _scale(self):
+        import math
+        if self.lo is not None:
+            return self.lo, self.hi, self.step
+        vals = [v for _, v in self.points if v is not None]
+        if self.ref is not None:
+            vals.append(self.ref)
+        hi = max(vals) if vals else 4.0
+        lo = min(vals) if vals else 1.0
+        step = RP._nice_step(max(hi - lo, 0.5) / 4)
+        lo = math.floor(lo / step) * step
+        if self.floor is not None:
+            lo = max(self.floor, lo)
+        hi = max(math.ceil(hi / step) * step, lo + step)
+        return lo, hi, step
+
     def paintEvent(self, _):
+        from PySide6.QtGui import QPen
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         W, H = self.width(), self.height()
-        L, R, T, B = 50, 10, 10, 26
+        L, R, T, B = 54, 12, 26, 24
         p.fillRect(0, 0, W, H, QColor("white"))
-        vals = [v for _, v in self.points if v is not None]
-        if self.usual is not None:
-            vals.append(self.usual)
-        hi = max(vals) if vals else 4.0
-        lo = min(vals) if vals else 1.0
-        span = max(hi - lo, 0.5)
-        step = RP._nice_step(span / 4)
-        import math
-        lo = max(1.0, math.floor(lo / step) * step)
-        hi = max(math.ceil(hi / step) * step, lo + step)
-        y = lambda v: T + (hi - v) / (hi - lo) * (H - T - B)
+        f = p.font(); f.setPointSize(10); p.setFont(f)
+        p.setPen(QColor("#1f2328"))
+        bf = p.font(); bf.setBold(True); p.setFont(bf)
+        p.drawText(L, 17, self.title)
+        bf.setBold(False); p.setFont(bf)
+        lo, hi, step = self._scale()
+        clip = lambda v: min(hi, max(lo, v))
+        y = lambda v: T + (hi - clip(v)) / (hi - lo) * (H - T - B)
         now = self.points[-1][0] if self.points else 0.0
         x = lambda tt: L + (tt - (now - self.SPAN)) / self.SPAN * (W - L - R)
-        p.setPen(QColor("#e4e7eb"))
-        f = p.font(); f.setPointSize(10); p.setFont(f)
         v = lo
         while v <= hi + 1e-9:
             p.setPen(QColor("#e4e7eb")); p.drawLine(L, int(y(v)), W - R, int(y(v)))
-            p.setPen(QColor("#5f6670")); p.drawText(4, int(y(v)) + 4, f"{v:g}")
+            p.setPen(QColor("#5f6670")); p.drawText(4, int(y(v)) + 4, (f"{v:+g}" if lo < 0 and abs(v) > 1e-9 else f"{v:g}"))
             v += step
-        for s in range(0, int(self.SPAN) + 1, 5):
-            xx = x(now - s)
-            p.setPen(QColor("#5f6670"))
-            p.drawText(int(xx) - 14, H - 6, f"-{s}s" if s else "now")
-        if self.usual is not None:
-            from PySide6.QtGui import QPen
+        for sec in range(0, int(self.SPAN) + 1, 5):
+            xx = x(now - sec)
+            p.drawText(int(xx) - 14, H - 6, f"-{sec}s" if sec else "now")
+        if self.ref is not None:
             pen = QPen(QColor("#c2552d")); pen.setStyle(Qt.DashLine); pen.setWidth(2)
             p.setPen(pen)
-            p.drawLine(L, int(y(self.usual)), W - R, int(y(self.usual)))
-        from PySide6.QtGui import QPen
-        pen = QPen(QColor("#2f6fbf")); pen.setWidth(3)
+            p.drawLine(L, int(y(self.ref)), W - R, int(y(self.ref)))
+        pen = QPen(QColor(self.color)); pen.setWidth(3)
         p.setPen(pen)
         prev = None
         for tt, v in self.points:
@@ -199,74 +211,129 @@ class BrightnessChart(QWidget):
         p.end()
 
 
-class LiveBrightness(QDialog):
-    """Shows brightness of the note you are playing, about 10 times a second."""
+def _panel(title: str) -> tuple:
+    """A framed box with a small heading; returns (frame, its layout)."""
+    from PySide6.QtWidgets import QFrame
+    fr = QFrame()
+    fr.setObjectName("panel")
+    fr.setStyleSheet("#panel{border:2px solid #c9ced6;border-radius:10px;background:#fbfcfd}")
+    lay = QVBoxLayout(fr)
+    lay.setContentsMargins(14, 8, 14, 10)
+    h = QLabel(title)
+    h.setStyleSheet("color:#5f6670;font-weight:600;border:none;background:transparent")
+    h.setAlignment(Qt.AlignCenter)
+    lay.addWidget(h)
+    return fr, lay
+
+
+class LiveBrightness(QWidget):
+    """Its own window (with minimize and maximize) showing the brightness and pitch
+    of the note you are playing, about 10 times a second."""
 
     def __init__(self, parent, get_rec, folder: Path):
-        super().__init__(parent)
-        self.setWindowTitle("Live brightness")
+        super().__init__(parent, Qt.Window)
+        self.setWindowTitle("Live brightness and pitch")
+        if icon_path().exists():
+            self.setWindowIcon(QIcon(str(icon_path())))
         self.get_rec = get_rec
         self.usual = AN.usual_brightness(folder)
         self.recent = []
         self.t0 = time.time()
-        self.resize(820, 520)
+        self.resize(900, 760)
         v = QVBoxLayout(self)
-        self.big = QLabel("–")
-        self.big.setAlignment(Qt.AlignCenter)
-        bf = QFont(self.font()); bf.setPointSize(48); bf.setBold(True)
-        self.big.setFont(bf)
-        v.addWidget(self.big)
+        v.setContentsMargins(14, 14, 14, 14)
+        v.setSpacing(10)
+
+        big = QFont(self.font()); big.setPointSize(44); big.setBold(True)
+        mid = QFont(self.font()); mid.setPointSize(18)
+
         self.note = QLabel("Play a note.")
         self.note.setAlignment(Qt.AlignCenter)
-        nf = QFont(self.font()); nf.setPointSize(18)
-        self.note.setFont(nf)
+        self.note.setFont(mid)
         v.addWidget(self.note)
+
+        row = QHBoxLayout()
+        fb, lb = _panel("Brightness")
+        self.big = QLabel("–")
+        self.big.setAlignment(Qt.AlignCenter)
+        self.big.setFont(big)
+        lb.addWidget(self.big)
         self.usual_label = QLabel("")
         self.usual_label.setAlignment(Qt.AlignCenter)
-        self.usual_label.setStyleSheet("color:#c2552d")
-        v.addWidget(self.usual_label)
-        self.chart = BrightnessChart()
-        v.addWidget(self.chart, 1)
-        hint = QLabel("Blue line: brightness over the last 30 seconds.  Dashed line: your usual brightness "
-                      "on this note (median of your last 10 sessions).  Higher means brighter.")
-        hint.setWordWrap(True)
-        hint.setStyleSheet("color:#5f6670")
-        v.addWidget(hint)
+        self.usual_label.setStyleSheet("color:#c2552d;border:none;background:transparent")
+        lb.addWidget(self.usual_label)
+        row.addWidget(fb, 1)
+        fp, lp = _panel("Pitch")
+        self.pitch = QLabel("–")
+        self.pitch.setAlignment(Qt.AlignCenter)
+        self.pitch.setFont(big)
+        lp.addWidget(self.pitch)
+        self.pitch_word = QLabel("")
+        self.pitch_word.setAlignment(Qt.AlignCenter)
+        self.pitch_word.setStyleSheet("border:none;background:transparent")
+        lp.addWidget(self.pitch_word)
+        row.addWidget(fp, 1)
+        v.addLayout(row)
+
+        fc, lc = _panel("Last 30 seconds")
+        self.chart = LiveChart("Brightness (higher = brighter; dashed = your usual on this note)",
+                               "#2f6fbf", floor=1.0)
+        self.pchart = LiveChart("Pitch, cents (dashed = in tune; scale stops at ±50)",
+                                "#6a1b9a", lo=-50, hi=50, step=25)
+        self.pchart.ref = 0.0
+        lc.addWidget(self.chart, 1)
+        lc.addWidget(self.pchart, 1)
+        v.addWidget(fc, 1)
+
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.tick)
         self.timer.start(100)
+
+    def _blank(self, now, text=None):
+        self.recent.clear()
+        if text:
+            self.note.setText(text)
+        self.chart.add(now, None)
+        self.pchart.add(now, None)
+        for w in (self.big, self.pitch):
+            w.setStyleSheet("color:#9aa0a6;border:none;background:transparent")
 
     def tick(self):
         rec = self.get_rec()
         now = time.time() - self.t0
         if rec is None:
-            self.note.setText("No microphone.")
-            self.chart.add(now, None)
+            self._blank(now, "No microphone.")
             return
         try:
             r = AN.live_brightness(rec.recent(AN.LIVE_SAMPLES), C.SAMPLE_RATE)
         except Exception:
             r = None
         if r is None:
-            self.recent.clear()
-            self.chart.add(now, None)
-            self.big.setStyleSheet("color:#9aa0a6")
+            self._blank(now)
             return
         name, cents, b = r
-        self.recent = (self.recent + [(name, b)])[-3:]
-        same = [x for n, x in self.recent if n == name]
-        shown = sorted(same)[len(same) // 2]
-        self.big.setText(f"{shown:.2f}")
-        self.big.setStyleSheet("color:#1f2328")
-        self.note.setText(f"Written {name}   {cents:+.0f} cents")
+        cents = float(cents)
+        self.recent = (self.recent + [(name, b, cents)])[-3:]
+        same = [(x, c) for n, x, c in self.recent if n == name]
+        shown_b = sorted(x for x, _ in same)[len(same) // 2]
+        shown_c = sorted(c for _, c in same)[len(same) // 2]
+        self.note.setText(f"Written {name}")
+        self.big.setText(f"{shown_b:.2f}")
+        self.big.setStyleSheet("color:#1f2328;border:none;background:transparent")
+        col = "#2e7d32" if abs(shown_c) <= 10 else ("#b8860b" if abs(shown_c) <= 25 else "#c62828")
+        self.pitch.setText("0" if round(shown_c) == 0 else f"{shown_c:+.0f}")
+        self.pitch.setStyleSheet(f"color:{col};border:none;background:transparent")
+        self.pitch_word.setText("cents, in tune" if abs(shown_c) <= 10 else
+                                ("cents sharp" if shown_c > 0 else "cents flat"))
         u = self.usual.get(name)
-        self.chart.usual = u
-        self.usual_label.setText(f"Your usual on {name}: {u:.2f}" if u is not None else "")
+        self.chart.ref = u
+        self.usual_label.setText(f"Your usual on {name}: {u:.2f}" if u is not None else "No history on this note yet")
         self.chart.add(now, b)
+        self.pchart.add(now, cents)
 
-    def done(self, r):
+    def closeEvent(self, e):
         self.timer.stop()
-        super().done(r)
+        super().closeEvent(e)
 
 FONT_PT = 14
 
@@ -708,9 +775,11 @@ class MainWindow(QMainWindow):
     def show_live(self):
         if getattr(self, "live", None) is None:
             self.live = LiveBrightness(self, lambda: self.rec if self.mic_ok else None, self.s.recordings_dir)
-            self.live.finished.connect(lambda _: setattr(self, "live", None))
+            self.live.setAttribute(Qt.WA_DeleteOnClose)
+            self.live.destroyed.connect(lambda *_: setattr(self, "live", None))
         self.live.show()
         self.live.raise_()
+        self.live.activateWindow()
 
     def set_hearing_aids(self, i: int):
         self.s.hearing_aids = bool(i)

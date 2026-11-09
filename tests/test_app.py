@@ -385,5 +385,8 @@ def test_live_brightness(tmp_path):
     w.show_live()
     assert wait_for(app, lambda: "C4" in w.live.note.text(), 5), w.live.note.text()
     assert float(w.live.big.text()) < 1.2
+    # simulated mic plays 233.08 Hz = sounding B-flat 3 exactly, written C4, 0 cents
+    assert w.live.pitch.text() == "0" and "in tune" in w.live.pitch_word.text()
+    assert w.live.isWindow()
     w.live.grab().save(str(tmp_path / "live.png"))
     w.live.close(); w.close()
