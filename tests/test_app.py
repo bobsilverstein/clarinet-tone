@@ -416,7 +416,7 @@ def test_metronome_clicks():
     onsets = sorted(set(round(i / sr, 2) for i in starts))
     assert onsets == [0.0, 1.0, 2.0, 3.0, 4.0], onsets
     peak = lambda t: np.abs(y[int(t * sr): int(t * sr) + 1200]).max()
-    assert peak(0) > peak(1) * 1.3 and peak(2) > peak(3) * 1.3
+    assert peak(0) > peak(1) * 1.1 and peak(2) > peak(3) * 1.1
     m.pause(True); assert not m.render(512).any()
 
 

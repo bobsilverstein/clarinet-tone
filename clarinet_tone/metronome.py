@@ -57,7 +57,7 @@ def _click(freq: float, amp: float, ms: float = 25.0) -> np.ndarray:
     return (amp * env * np.sin(2 * np.pi * freq * t)).astype(np.float32)
 
 
-ACCENT = _click(2000.0, 0.9)
+ACCENT = _click(1500.0, 0.72)     # slight accent: a major third higher, about 1.6 dB louder
 BEAT = _click(1200.0, 0.6)
 
 
