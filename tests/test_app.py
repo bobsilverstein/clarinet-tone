@@ -492,3 +492,19 @@ def test_headset_not_found(tmp_path):
     w.start(); pump(app, 0.3)
     assert rescans and w.rec.recording and "without the click" in w.metro_label.text()
     w.stop(); w.close()
+
+
+def test_headset_choice(monkeypatch):
+    from clarinet_tone import metronome as MT
+    devs = [{"name": "Speakers (Realtek)", "max_output_channels": 2, "hostapi": 0},
+            {"name": "Headset (WH-CH720N)", "max_output_channels": 1, "hostapi": 0},
+            {"name": "Headphones (WH-CH720N)", "max_output_channels": 2, "hostapi": 0},
+            {"name": "Headphones (OpenRun by Shokz)", "max_output_channels": 2, "hostapi": 0}]
+    fake = types.SimpleNamespace(query_hostapis=lambda: [{"name": "MME"}],
+                                 query_devices=lambda: devs, check_output_settings=lambda **k: None)
+    monkeypatch.setattr(MT, "_sd", lambda: fake)
+    hints = C.Settings().headsets
+    assert MT.find_headset(hints) == (3, "Headphones (OpenRun by Shokz)")
+    devs.pop()                                     # Shokz off: the Sony, stereo profile
+    assert MT.find_headset(hints) == (2, "Headphones (WH-CH720N)")
+    assert C.TUNING.bpm == 0

@@ -954,7 +954,7 @@ class MainWindow(QMainWindow):
         if rescan and not (self.rec and self.rec.recording):
             self.connect_mic()          # re-reads the devices and reopens the mic
         try:
-            found = self.headset_finder(self.s.headset_hint)
+            found = self.headset_finder(self.s.headsets)
         except Exception:
             found = None
         if found is None:
@@ -979,8 +979,8 @@ class MainWindow(QMainWindow):
             self.metro_label.setText(f"Click goes to {self.metro.name}; it starts with Record.")
             self.metro_label.setStyleSheet("color:#2e7d32")
         else:
-            self.metro_label.setText("Headset not found yet.  Turn on the Shokz; the program looks again "
-                                     "when you press Record.")
+            self.metro_label.setText("Headset not found yet.  Turn on the Shokz or the Sony; the program "
+                                     "looks again when you press Record.")
             self.metro_label.setStyleSheet("color:#b8860b")
 
     def edit_equipment(self):
@@ -1005,7 +1005,7 @@ class MainWindow(QMainWindow):
         test = self.is_test()
         self.test_row.setVisible(test)
         self.tempo_label.setText("Test take: saved in Recordings\\Tests; kept out of your exercise history."
-                                 if test else f"Tempo {ex.tempo}.")
+                                 if test else (f"Tempo {ex.tempo}." if ex.bpm else "No metronome for this exercise."))
         if not (self.rec and self.rec.recording):
             self.show_metronome()
         eq = self.equipment()
@@ -1085,7 +1085,7 @@ class MainWindow(QMainWindow):
                 self.show_metronome(f"Metronome could not start ({e}).  Recording anyway.")
         elif click:
             self.show_metronome("Headset not found: recording without the click.  "
-                                "Turn on the Shokz before the next take.")
+                                "Turn on a headset before the next take.")
         self.file_label.setText(f"Recording to: {path.name}")
         self.last_saved = None
         self.status.setText("")

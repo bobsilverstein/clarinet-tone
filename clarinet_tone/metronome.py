@@ -21,22 +21,25 @@ def _sd():
     return sounddevice
 
 
-def find_headset(hint: str):
-    """(device index, name) of the headset output, or None.
+def find_headset(hints: str):
+    """(device index, name) of the first headset found, or None.  hints lists parts of
+    the headsets' names, separated by commas, first choice first (Shokz, then Sony).
     Windows lists a Bluetooth headset twice: "Headphones (…)" for stereo music and
     "Headset (…)" for calls.  The calls profile lowers sound quality and can take
     over the microphone, so "Headphones" comes first."""
     sd = _sd()
-    hint = (hint or "").lower().strip()
-    if not hint:
+    hints = [h.strip().lower() for h in (hints or "").split(",") if h.strip()]
+    if not hints:
         return None
     apis = sd.query_hostapis()
     cands = []
     for i, d in enumerate(sd.query_devices()):
-        if d["max_output_channels"] > 0 and hint in d["name"].lower():
+        name = d["name"].lower()
+        which = next((k for k, h in enumerate(hints) if h in name), None)
+        if d["max_output_channels"] > 0 and which is not None:
             api = apis[d["hostapi"]]["name"]
-            calls = "headset" in d["name"].lower() and "headphone" not in d["name"].lower()
-            rank = (calls, _HOST_ORDER.index(api) if api in _HOST_ORDER else 99)
+            calls = "headset" in name and "headphone" not in name
+            rank = (which, calls, _HOST_ORDER.index(api) if api in _HOST_ORDER else 99)
             cands.append((rank, i, d["name"]))
     for _, i, name in sorted(cands):
         try:

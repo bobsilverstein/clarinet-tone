@@ -84,7 +84,7 @@ class Settings:
     shortcut_made: bool = False
     hearing_aids: bool = False          # last setting of the hearing-aids switch
     metronome_on: bool = True           # click in the Bluetooth headset during takes
-    headset_hint: str = "openrun"       # part of the headset's name in Windows
+    headsets: str = "openrun, wh-ch720n"  # parts of headset names in Windows, first choice first
     equipment_on: bool = False          # record mouthpiece, ligature, barrel with each take
     mouthpiece: str = ""
     ligature: str = ""
@@ -142,7 +142,7 @@ def long_tone_for(day: date) -> Exercise:
 
 LEGATO = Exercise("legato", "Legato warm-up", "88 bpm, 2/4", 88, 2)
 REGISTER = Exercise("register", "Register key / embouchure", "60 bpm, 2/4", 60, 2)
-TUNING = Exercise("tuning", "Tuning pattern", "60 bpm, 4/4", 60, 4)
+TUNING = Exercise("tuning", "Tuning pattern", "no metronome")
 
 # Written notes of the tuning pattern, slurred, in order (Bob, 2026-11-10).
 TUNING_PATTERN = ["C4", "G5", "C5", "C4", "G5", "E6"]
