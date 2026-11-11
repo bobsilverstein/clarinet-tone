@@ -2,6 +2,7 @@
 import os
 import subprocess
 import time
+import webbrowser
 from datetime import date, datetime
 from pathlib import Path
 
@@ -9,7 +10,7 @@ from PySide6.QtCore import Qt, QTimer, QDate, QObject, Signal
 import threading
 from PySide6.QtGui import QColor, QFont, QIcon, QPainter
 from PySide6.QtWidgets import (
-    QApplication, QButtonGroup, QComboBox, QDateEdit, QDialog, QDialogButtonBox,
+    QApplication, QButtonGroup, QCheckBox, QComboBox, QDateEdit, QDialog, QDialogButtonBox,
     QFileDialog, QFormLayout, QProgressDialog, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
     QListWidget, QListWidgetItem, QMessageBox, QPushButton, QTextEdit, QVBoxLayout, QWidget,
 )
@@ -18,6 +19,7 @@ from . import config as C
 from . import updater as U
 from . import analysis as AN
 from . import report as RP
+from . import metronome as MT
 
 
 class _Relay(QObject):
@@ -71,17 +73,25 @@ def open_file(p: Path):
         subprocess.Popen(["xdg-open", str(p)])
 
 
+def open_in_browser(p: Path):
+    """Open a report in a new tab of the default browser."""
+    webbrowser.open_new_tab(Path(p).resolve().as_uri())
+
+
 class ReportsDialog(QDialog):
-    """List past reports, newest first; make any that are missing."""
-    def __init__(self, parent, folder: Path):
+    """List past reports, newest first, each with a check box; open the checked ones,
+    or compare them side by side.  Also makes any reports that are missing."""
+    def __init__(self, parent, folder: Path, opener=None):
         super().__init__(parent)
         self.setWindowTitle("Reports")
         self.folder = folder
-        self.resize(760, 520)
+        self.opener = opener or open_in_browser
+        self.resize(820, 560)
         v = QVBoxLayout(self)
         self.lst = QListWidget()
-        self.lst.itemDoubleClicked.connect(lambda it: open_file(Path(it.data(Qt.UserRole))))
-        v.addWidget(QLabel("Double-click a report to open it."))
+        self.lst.itemChanged.connect(lambda _: self.update_buttons())
+        v.addWidget(QLabel("Check the reports you want, then press Open (each opens in its own tab) "
+                           "or Compare (one page, side by side)."))
         v.addWidget(self.lst, 1)
         self.note = QLabel()
         self.note.setWordWrap(True)
@@ -92,10 +102,55 @@ class ReportsDialog(QDialog):
         h.addWidget(self.btn_make)
         h.addStretch(1)
         close = QPushButton("Close")
-        close.clicked.connect(self.accept)
+        close.clicked.connect(self.reject)
         h.addWidget(close)
+        self.btn_compare = QPushButton("Compare")
+        self.btn_compare.clicked.connect(self.compare_checked)
+        h.addWidget(self.btn_compare)
+        self.btn_open = QPushButton("Open")
+        self.btn_open.setDefault(True)
+        self.btn_open.setStyleSheet("QPushButton{background:#1565c0;color:white;font-weight:bold;padding:4px 18px}"
+                                    "QPushButton:disabled{background:#9db7d8}")
+        self.btn_open.clicked.connect(self.open_checked)
+        h.addWidget(self.btn_open)
         v.addLayout(h)
         self.fill()
+
+    def checked(self) -> list[Path]:
+        out = []
+        for i in range(self.lst.count()):
+            it = self.lst.item(i)
+            if it.checkState() == Qt.Checked:
+                out.append(Path(it.data(Qt.UserRole)))
+        return out
+
+    def update_buttons(self):
+        n = len(self.checked())
+        self.btn_open.setEnabled(n >= 1)
+        self.btn_compare.setEnabled(n >= 2)
+        self.btn_open.setText(f"Open {n}" if n > 1 else "Open")
+
+    def open_checked(self):
+        for p in reversed(self.checked()):      # oldest first, so the newest ends up the last tab
+            self.opener(p)
+        self.accept()
+
+    def compare_checked(self):
+        import json
+        results = []
+        for p in self.checked():
+            a = p.with_name(p.name.replace(".report.html", ".analysis.json"))
+            try:
+                results.append(json.loads(a.read_text(encoding="utf-8")))
+            except Exception:
+                continue
+        if len(results) < 2:
+            QMessageBox.warning(self, "Compare", "Check at least two reports.")
+            return
+        results.sort(key=lambda r: r.get("taken", ""))
+        out = self.folder / "Comparison.html"
+        out.write_text(RP.build_compare(results), encoding="utf-8")
+        self.opener(out)
 
     def missing(self):
         return stale_recordings(self.folder)
@@ -107,7 +162,10 @@ class ReportsDialog(QDialog):
             tag = "   (test)" if p.parent.name.lower() == "tests" else ""
             it = QListWidgetItem(p.name.replace(".report.html", "") + tag)
             it.setData(Qt.UserRole, str(p))
+            it.setFlags(it.flags() | Qt.ItemIsUserCheckable)
+            it.setCheckState(Qt.Unchecked)
             self.lst.addItem(it)
+        self.update_buttons()
         m = self.missing()
         self.btn_make.setEnabled(bool(m))
         self.note.setText(f"{len(m)} recording(s) need a new or updated report." if m
@@ -220,7 +278,7 @@ def _panel(title: str) -> tuple:
     lay = QVBoxLayout(fr)
     lay.setContentsMargins(14, 8, 14, 10)
     h = QLabel(title)
-    h.setStyleSheet("color:#5f6670;font-weight:600;border:none;background:transparent")
+    h.setStyleSheet("color:#5f6670;font-weight:700;font-size:16pt;border:none;background:transparent")
     h.setAlignment(Qt.AlignCenter)
     lay.addWidget(h)
     return fr, lay
@@ -239,13 +297,14 @@ class LiveBrightness(QWidget):
         self.usual = AN.usual_brightness(folder)
         self.recent = []
         self.t0 = time.time()
-        self.resize(900, 760)
+        self.resize(1000, 880)
         v = QVBoxLayout(self)
         v.setContentsMargins(14, 14, 14, 14)
         v.setSpacing(10)
 
-        big = QFont(self.font()); big.setPointSize(44); big.setBold(True)
-        mid = QFont(self.font()); mid.setPointSize(18)
+        big = QFont(self.font()); big.setPointSize(96); big.setWeight(QFont.Black)
+        mid = QFont(self.font()); mid.setPointSize(28); mid.setBold(True)
+        sub = QFont(self.font()); sub.setPointSize(18); sub.setBold(True)
 
         self.note = QLabel("Play a note.")
         self.note.setAlignment(Qt.AlignCenter)
@@ -260,6 +319,7 @@ class LiveBrightness(QWidget):
         lb.addWidget(self.big)
         self.usual_label = QLabel("")
         self.usual_label.setAlignment(Qt.AlignCenter)
+        self.usual_label.setFont(sub)
         self.usual_label.setStyleSheet("color:#c2552d;border:none;background:transparent")
         lb.addWidget(self.usual_label)
         row.addWidget(fb, 1)
@@ -270,6 +330,7 @@ class LiveBrightness(QWidget):
         lp.addWidget(self.pitch)
         self.pitch_word = QLabel("")
         self.pitch_word.setAlignment(Qt.AlignCenter)
+        self.pitch_word.setFont(sub)
         self.pitch_word.setStyleSheet("border:none;background:transparent")
         lp.addWidget(self.pitch_word)
         row.addWidget(fp, 1)
@@ -404,11 +465,25 @@ class ReedDialog(QDialog):
         f.addRow("Brand", self.brand)
         f.addRow("Model", self.model)
         f.addRow("Strength", self.strength)
-        f.addRow("Notes", self.notes)
+        nb = QHBoxLayout()
+        nb.addWidget(self.notes, 1)
+        mic = QPushButton("🎤 Dictate")
+        mic.setToolTip("Speak your notes: starts Windows voice typing (Win+H) in the Notes box.")
+        mic.clicked.connect(self.dictate)
+        nb.addWidget(mic, 0, Qt.AlignTop)
+        f.addRow("Notes", nb)
         b = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         b.accepted.connect(self.accept)
         b.rejected.connect(self.reject)
         f.addRow(b)
+
+    def dictate(self):
+        """Put the cursor in the Notes box and start Windows voice typing (same as Win+H)."""
+        self.notes.setFocus()
+        self.notes.moveCursor(self.notes.textCursor().MoveOperation.End)
+        if os.name != "nt":
+            return
+        QTimer.singleShot(150, _press_win_h)
 
     def reed(self) -> C.Reed:
         return C.Reed(
@@ -421,11 +496,57 @@ class ReedDialog(QDialog):
         )
 
 
+def _press_win_h():
+    try:
+        import ctypes
+        k = ctypes.windll.user32.keybd_event
+        VK_LWIN, VK_H, UP = 0x5B, 0x48, 0x0002
+        k(VK_LWIN, 0, 0, 0); k(VK_H, 0, 0, 0); k(VK_H, 0, UP, 0); k(VK_LWIN, 0, UP, 0)
+    except Exception:
+        pass
+
+
+class EquipmentDialog(QDialog):
+    """Optional: record mouthpiece, ligature, and barrel with each take, for comparisons."""
+    def __init__(self, parent, s: C.Settings):
+        super().__init__(parent)
+        self.setWindowTitle("Equipment")
+        f = QFormLayout(self)
+        self.on = QCheckBox("Record this equipment with each take")
+        self.on.setChecked(s.equipment_on)
+        f.addRow(self.on)
+        self.mouthpiece = QLineEdit(s.mouthpiece)
+        self.ligature = QLineEdit(s.ligature)
+        self.barrel = QLineEdit(s.barrel)
+        self.barrel.setPlaceholderText("for example, Backun 66 mm")
+        f.addRow("Mouthpiece", self.mouthpiece)
+        f.addRow("Ligature", self.ligature)
+        f.addRow("Barrel", self.barrel)
+        tip = QLabel("Turn this on only on days you compare equipment.  To compare, open Reports…, "
+                     "check the takes, and press Compare.")
+        tip.setWordWrap(True)
+        f.addRow(tip)
+        b = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        b.accepted.connect(self.accept)
+        b.rejected.connect(self.reject)
+        f.addRow(b)
+
+    def apply(self, s: C.Settings):
+        s.equipment_on = self.on.isChecked()
+        s.mouthpiece = self.mouthpiece.text().strip()
+        s.ligature = self.ligature.text().strip()
+        s.barrel = self.barrel.text().strip()
+
+
 class MainWindow(QMainWindow):
     def __init__(self, settings: C.Settings, mic_finder=choose_mic, recorder_cls=Recorder,
-                 device_refresher=refresh_devices):
+                 device_refresher=refresh_devices, headset_finder=MT.find_headset,
+                 metronome_cls=MT.Metronome, report_opener=open_in_browser):
         super().__init__()
         self.mic_finder, self.recorder_cls, self.refresh_dev = mic_finder, recorder_cls, device_refresher
+        self.headset_finder, self.metronome_cls = headset_finder, metronome_cls
+        self.report_opener = report_opener
+        self.metro = None
         self.mic_ok = False
         self.mic_box = None
         self.next_retry = 0.0
@@ -471,6 +592,9 @@ class MainWindow(QMainWindow):
             b.setStyleSheet("QPushButton:checked{background:#1565c0;color:white;font-weight:bold}")
             self.dots_group.addButton(b, n)
             hd.addWidget(b)
+        self.age_label = QLabel()
+        self.age_label.setStyleSheet("margin-left:14px")
+        hd.addWidget(self.age_label)
         hd.addStretch(1)
         self.dots_group.idClicked.connect(self.set_dots)
         v.addLayout(hd)
@@ -524,8 +648,31 @@ class MainWindow(QMainWindow):
         self.ha_group.button(1 if self.s.hearing_aids else 0).setChecked(True)
         self.ha_group.idClicked.connect(self.set_hearing_aids)
         v.addLayout(hh)
+        # metronome click in the Bluetooth headset
+        hm = QHBoxLayout()
+        hm.addWidget(QLabel("Metronome:"))
+        self.metro_group = QButtonGroup(self)
+        self.metro_group.setExclusive(True)
+        for i, txt in ((0, "Off"), (1, "On")):
+            b = QPushButton(txt)
+            b.setCheckable(True)
+            b.setMinimumWidth(80)
+            b.setStyleSheet("QPushButton:checked{background:#1565c0;color:white;font-weight:bold}")
+            self.metro_group.addButton(b, i)
+            hm.addWidget(b)
+        self.metro_group.button(1 if self.s.metronome_on else 0).setChecked(True)
+        self.metro_group.idClicked.connect(self.set_metronome)
         self.tempo_label = QLabel()
-        v.addWidget(self.tempo_label)
+        self.tempo_label.setStyleSheet("margin-left:14px")
+        hm.addWidget(self.tempo_label)
+        hm.addStretch(1)
+        v.addLayout(hm)
+        self.metro_label = QLabel()
+        self.metro_label.setWordWrap(True)
+        v.addWidget(self.metro_label)
+        self.equip_label = QLabel()
+        self.equip_label.setStyleSheet("color:#6a1b9a")
+        v.addWidget(self.equip_label)
 
         # level meter
         v.addWidget(QLabel("Level:"))
@@ -552,6 +699,15 @@ class MainWindow(QMainWindow):
         self.last_saved = None      # (path, exercise index) of the newest saved file
         v.addLayout(hc)
 
+        self.btn_live = QPushButton("Live brightness and pitch")
+        self.btn_live.setMinimumHeight(60)
+        lvf = QFont(self.font()); lvf.setPointSize(int(FONT_PT * 1.3)); lvf.setBold(True)
+        self.btn_live.setFont(lvf)
+        self.btn_live.setStyleSheet("QPushButton{background:#00796b;color:white;border-radius:6px}"
+                                    "QPushButton:hover{background:#00897b}")
+        self.btn_live.clicked.connect(self.show_live)
+        v.addWidget(self.btn_live)
+
         self.clock = QLabel("0:00")
         self.clock.setAlignment(Qt.AlignCenter)
         cf = QFont(self.font())
@@ -576,11 +732,11 @@ class MainWindow(QMainWindow):
         v.addWidget(self.folder_label)
         hf = QHBoxLayout()
         rpt = QPushButton("Reports…")
-        rpt.clicked.connect(lambda: ReportsDialog(self, self.s.recordings_dir).exec())
+        rpt.clicked.connect(lambda: ReportsDialog(self, self.s.recordings_dir, self.report_opener).exec())
         hf.addWidget(rpt)
-        live = QPushButton("Live brightness…")
-        live.clicked.connect(self.show_live)
-        hf.addWidget(live)
+        eqb = QPushButton("Equipment…")
+        eqb.clicked.connect(self.edit_equipment)
+        hf.addWidget(eqb)
         upd = QPushButton("Check for update")
         upd.clicked.connect(self.check_update)
         hf.addWidget(upd)
@@ -602,7 +758,7 @@ class MainWindow(QMainWindow):
         hr2 = QHBoxLayout()
         hr2.addWidget(self.report_line, 1)
         self.btn_open_report = QPushButton("Open report")
-        self.btn_open_report.clicked.connect(lambda: self.last_report and open_file(self.last_report))
+        self.btn_open_report.clicked.connect(lambda: self.last_report and self.report_opener(self.last_report))
         self.btn_open_report.setVisible(False)
         hr2.addWidget(self.btn_open_report)
         v.addLayout(hr2)
@@ -615,6 +771,7 @@ class MainWindow(QMainWindow):
         self.reed_box.currentIndexChanged.connect(lambda _: self.refresh_labels())
 
         self.connect_mic(first=True)
+        self.find_metronome()
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.tick)
@@ -629,7 +786,10 @@ class MainWindow(QMainWindow):
     def connect_mic(self, first: bool = False) -> bool:
         """Find and open the mic.  Returns True when a working mic is open."""
         if not first:
-            self.refresh_dev()
+            try:
+                self.refresh_dev()
+            except Exception:
+                pass
         try:
             mic = self.mic_finder()
         except Exception:
@@ -673,6 +833,8 @@ class MainWindow(QMainWindow):
             if self.rec.recording:
                 if not self.rec.paused:
                     self.rec.pause()
+                if self.metro:
+                    self.metro.pause(True)
                 self.rec.meta.setdefault("disconnects", []).append(round(self.rec.seconds, 2))
                 self.show_mic("Microphone disconnected.  Recording paused; what you played "
                               "so far is kept.  Plug the mic back in.", False)
@@ -781,6 +943,59 @@ class MainWindow(QMainWindow):
         self.live.raise_()
         self.live.activateWindow()
 
+    def set_metronome(self, i: int):
+        self.s.metronome_on = bool(i)
+        self.s.save()
+        self.refresh_labels()
+
+    def find_metronome(self, rescan: bool = False) -> bool:
+        """Look for the headset.  With rescan, Windows' device list is read again
+        (only between takes: it reopens the microphone)."""
+        if rescan and not (self.rec and self.rec.recording):
+            self.connect_mic()          # re-reads the devices and reopens the mic
+        try:
+            found = self.headset_finder(self.s.headset_hint)
+        except Exception:
+            found = None
+        if found is None:
+            if self.metro:
+                self.metro.stop()
+            self.metro = None
+        elif self.metro is None or self.metro.device != found[0]:
+            if self.metro:
+                self.metro.stop()
+            self.metro = self.metronome_cls(*found)
+        self.show_metronome()
+        return self.metro is not None
+
+    def show_metronome(self, warn: str = ""):
+        if warn:
+            self.metro_label.setText(warn)
+            self.metro_label.setStyleSheet("color:#c62828;font-weight:bold")
+        elif not self.s.metronome_on:
+            self.metro_label.setText("Metronome off: use your own.")
+            self.metro_label.setStyleSheet("color:#444")
+        elif self.metro:
+            self.metro_label.setText(f"Click goes to {self.metro.name}; it starts with Record.")
+            self.metro_label.setStyleSheet("color:#2e7d32")
+        else:
+            self.metro_label.setText("Headset not found yet.  Turn on the Shokz; the program looks again "
+                                     "when you press Record.")
+            self.metro_label.setStyleSheet("color:#b8860b")
+
+    def edit_equipment(self):
+        d = EquipmentDialog(self, self.s)
+        if d.exec() == QDialog.Accepted:
+            d.apply(self.s)
+            self.s.save()
+            self.refresh_labels()
+
+    def equipment(self) -> dict:
+        if not self.s.equipment_on:
+            return {}
+        return {k: v for k, v in (("mouthpiece", self.s.mouthpiece), ("ligature", self.s.ligature),
+                                  ("barrel", self.s.barrel)) if v}
+
     def set_hearing_aids(self, i: int):
         self.s.hearing_aids = bool(i)
         self.s.save()
@@ -790,8 +1005,14 @@ class MainWindow(QMainWindow):
         test = self.is_test()
         self.test_row.setVisible(test)
         self.tempo_label.setText("Test take: saved in Recordings\\Tests; kept out of your exercise history."
-                                 if test else f"Set your metronome to {ex.tempo}.")
+                                 if test else f"Tempo {ex.tempo}.")
+        if not (self.rec and self.rec.recording):
+            self.show_metronome()
+        eq = self.equipment()
+        self.equip_label.setVisible(bool(eq))
+        self.equip_label.setText("Equipment: " + ", ".join(f"{k} {v}" for k, v in eq.items()))
         r = self.current_reed()
+        self.age_label.setText(f"Age: {r.age_days()} days" if r else "")
         if r is None:
             self.file_label.setText("Add a reed before recording.")
         elif not (self.rec and self.rec.recording):
@@ -814,6 +1035,8 @@ class MainWindow(QMainWindow):
             b.setEnabled(not recording)
         for b in self.ha_group.buttons():
             b.setEnabled(not recording)
+        for b in self.metro_group.buttons():
+            b.setEnabled(not recording)
         self.test_desc.setEnabled(not recording)
         self.reed_box.setEnabled(not recording)
         for b in self.dots_group.buttons():
@@ -826,6 +1049,11 @@ class MainWindow(QMainWindow):
         r, ex = self.current_reed(), self.exercise()
         if not (self.rec and r):
             return
+        click = self.s.metronome_on and ex.bpm > 0
+        if click and not self.find_metronome():
+            self.find_metronome(rescan=True)        # the headset may have been turned on since
+            if not (self.rec and self.mic_ok):
+                return
         now = datetime.now()
         folder = self.target_dir()
         try:
@@ -837,6 +1065,9 @@ class MainWindow(QMainWindow):
         meta = {"exercise": ex.key, "exercise_title": ex.title, "tempo": ex.tempo,
                 "hearing_aids": bool(self.ha_group.checkedId() == 1),
                 "test_description": self.test_desc.text().strip() if self.is_test() else "",
+                "reed_age_days": r.age_days(),
+                "equipment": self.equipment(),
+                "metronome": (f"{ex.tempo}, in {self.metro.name}" if click and self.metro else "none"),
                 "reed": {"label": r.label, "started": r.started, "dots": r.dots,
                          "brand": r.brand, "model": r.model, "strength": r.strength}}
         try:
@@ -846,6 +1077,15 @@ class MainWindow(QMainWindow):
             return
         self.s.last_reed = r.label
         self.s.save()
+        if click and self.metro:
+            try:
+                self.metro.start(ex.bpm, ex.beats)
+                self.show_metronome()
+            except Exception as e:
+                self.show_metronome(f"Metronome could not start ({e}).  Recording anyway.")
+        elif click:
+            self.show_metronome("Headset not found: recording without the click.  "
+                                "Turn on the Shokz before the next take.")
         self.file_label.setText(f"Recording to: {path.name}")
         self.last_saved = None
         self.status.setText("")
@@ -855,12 +1095,16 @@ class MainWindow(QMainWindow):
         if not self.rec:
             return
         self.rec.resume() if self.rec.paused else self.rec.pause()
+        if self.metro:
+            self.metro.pause(self.rec.paused)
         self.update_buttons()
 
     def stop(self):
         if not (self.rec and self.rec.recording):
             return
         ex_index = self.ex_group.checkedId()
+        if self.metro:
+            self.metro.stop()
         path = self.rec.stop()
         self.last_saved = (path, ex_index)
         secs = self.rec.seconds
@@ -892,6 +1136,8 @@ class MainWindow(QMainWindow):
         if confirm and QMessageBox.question(
                 self, "Discard", f"Delete this recording?\n\n{name}") != QMessageBox.Yes:
             return
+        if self.metro:
+            self.metro.stop()
         path = self.rec.stop() if recording else self.last_saved[0]
         files = [path, path.with_suffix(".json"), AN.analysis_path(path), RP.report_path(path)]
         for _ in range(20):     # Windows cannot delete a file another thread has open; try for up to 2 s
@@ -958,6 +1204,10 @@ class MainWindow(QMainWindow):
         self.report_line.setStyleSheet("color:#1f2328")
         self.last_report = RP.report_path(wav)
         self.btn_open_report.setVisible(True)
+        try:
+            self.report_opener(self.last_report)       # each report opens in its own browser tab
+        except Exception:
+            pass
 
     def clear_loudest(self):
         if self.rec:
@@ -1109,6 +1359,8 @@ class MainWindow(QMainWindow):
                 e.ignore()
                 return
             self.stop()
+        if self.metro:
+            self.metro.stop()
         if self.rec:
             self.rec.close()
         e.accept()

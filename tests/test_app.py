@@ -1,6 +1,7 @@
 """Runs the window off-screen with a simulated microphone."""
 import json, os, sys, threading, time
 from datetime import date, datetime
+from PySide6.QtCore import Qt
 from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -8,7 +9,8 @@ import numpy as np, soundfile as sf
 from clarinet_tone import config as C
 from clarinet_tone.recorder import Recorder, MicChoice
 
-import types
+import types, webbrowser
+webbrowser.open_new_tab = lambda *a, **k: True      # never launch a browser during tests
 PLUGGED = {"on": True}
 
 class FakeRecorder(Recorder):
@@ -17,9 +19,11 @@ class FakeRecorder(Recorder):
         self.stream_error = ""; self.silent_since = None
         self._stream = types.SimpleNamespace(active=True, abort=lambda: None, close=lambda: None)
         self.last_callback = time.time()
+        self._gen = getattr(self, "_gen", 0) + 1
+        me = self._gen
         def gen():
             t = 0
-            while self._run and PLUGGED["on"]:
+            while self._run and PLUGGED["on"] and self._gen == me:
                 n = 1024
                 x = 0.5*np.sin(2*np.pi*233.08*(np.arange(t, t+n)/C.SAMPLE_RATE)).astype(np.float32)
                 self._callback(x[:, None], n, None, None); t += n
@@ -390,3 +394,101 @@ def test_live_brightness(tmp_path):
     assert w.live.isWindow()
     w.live.grab().save(str(tmp_path / "live.png"))
     w.live.close(); w.close()
+
+
+class FakeMetronome:
+    log = []
+    def __init__(self, device, name):
+        self.device, self.name = device, name
+    def start(self, bpm, beats): FakeMetronome.log.append(("start", bpm, beats))
+    def pause(self, p): FakeMetronome.log.append(("pause", p))
+    def stop(self): FakeMetronome.log.append(("stop",))
+
+
+def test_metronome_clicks():
+    from clarinet_tone import metronome as MT
+    m = MT.Metronome(0, "Headphones (OpenRun by Shokz)")
+    m.bpm, m.beats = 60, 2
+    sr = C.SAMPLE_RATE
+    # 4.2 seconds in uneven blocks: clicks at 0, 1, 2, 3, 4 s; accents at 0, 2, 4 s
+    y = np.concatenate([m.render(n) for n in [700, 333, 1024] * 3000])[: int(4.2 * sr)]
+    starts = [i for i in range(1, len(y)) if y[i] != 0 and y[i - 1] == 0] + ([0] if y[0] != 0 or y[1] != 0 else [])
+    onsets = sorted(set(round(i / sr, 2) for i in starts))
+    assert onsets == [0.0, 1.0, 2.0, 3.0, 4.0], onsets
+    peak = lambda t: np.abs(y[int(t * sr): int(t * sr) + 1200]).max()
+    assert peak(0) > peak(1) * 1.3 and peak(2) > peak(3) * 1.3
+    m.pause(True); assert not m.render(512).any()
+
+
+def test_new_features(tmp_path):
+    """Metronome follows Record/Pause/Stop; report opens by itself; reed age;
+    equipment; tuning pattern; reports dialog check boxes and compare."""
+    os.environ["APPDATA"] = str(tmp_path / "appdata")
+    from PySide6.QtWidgets import QApplication
+    app = QApplication.instance() or QApplication([])
+    from clarinet_tone.ui import MainWindow, ReportsDialog
+    from clarinet_tone import analysis as AN, report as RP
+    s = C.Settings(base_dir=str(tmp_path / "Clarinet tone"), mouthpiece="Vandoren M13",
+                   barrel="Backun 66", equipment_on=True)
+    C.save_reeds(s.reeds_file, [C.Reed(started="2026-08-04", dots=1)])
+    opened = []
+    FakeMetronome.log = []
+    PLUGGED["on"] = True
+    w = MainWindow(s, mic_finder=lambda: MicChoice(0, "Blue Snowball", "MME", True), recorder_cls=FakeRecorder,
+                   headset_finder=lambda hint: (5, "Headphones (OpenRun by Shokz)"),
+                   metronome_cls=FakeMetronome, report_opener=opened.append)
+    assert "OpenRun" in w.metro_label.text()
+    assert w.age_label.text() == f"Age: {(date.today() - date(2026, 8, 4)).days} days"
+    assert "Vandoren M13" in w.equip_label.text() and not w.equip_label.isHidden()
+    assert [w.ex_group.button(i).text() for i in range(4)][3] == "Tuning pattern"
+    w.start(); pump(app, 0.3); w.toggle_pause(); w.toggle_pause(); pump(app, 0.3); w.stop()
+    assert FakeMetronome.log == [("start", 88, 4), ("pause", True), ("pause", False), ("stop",)], FakeMetronome.log
+    wav = w.last_saved[0]
+    assert wait_for(app, lambda: opened, 20) and opened[0] == RP.report_path(wav)
+    meta = json.loads(wav.with_suffix(".json").read_text())
+    assert meta["equipment"] == {"mouthpiece": "Vandoren M13", "barrel": "Backun 66"}
+    assert meta["reed_age_days"] > 90 and "OpenRun" in meta["metronome"]
+    page = RP.report_path(wav).read_text(encoding="utf-8")
+    assert "Equipment: Mouthpiece Vandoren M13, barrel Backun 66" in page and "Reed age" in page
+    # metronome off: no click
+    w.metro_group.button(0).click()
+    assert C.Settings.load().metronome_on is False
+    FakeMetronome.log = []
+    w.ex_group.button(3).click()                  # tuning pattern
+    w.start(); pump(app, 2.2); w.stop()
+    assert FakeMetronome.log == [("stop",)]
+    tw = w.last_saved[0]
+    assert tw.name.endswith("_tuning.wav")
+    assert wait_for(app, lambda: len(opened) == 2, 20)
+    tpage = RP.report_path(tw).read_text(encoding="utf-8")
+    assert "Pattern check" in tpage and "did not sound" in tpage and "<td>C4</td><td>yes" in tpage
+    # reports dialog: check boxes, open, compare
+    seen = []
+    d = ReportsDialog(w, s.recordings_dir, opener=seen.append)
+    assert d.lst.count() == 2 and not d.btn_open.isEnabled() and not d.btn_compare.isEnabled()
+    for i in range(2):
+        d.lst.item(i).setCheckState(Qt.Checked)
+    assert d.btn_open.isEnabled() and d.btn_compare.isEnabled() and d.btn_open.text() == "Open 2"
+    d.compare_checked()
+    cmp = seen[-1]
+    assert cmp.name == "Comparison.html" and "Comparison of 2 takes" in cmp.read_text(encoding="utf-8")
+    seen.clear(); d.open_checked()
+    assert len(seen) == 2 and all(p.name.endswith(".report.html") for p in seen)
+    w.close()
+
+
+def test_headset_not_found(tmp_path):
+    os.environ["APPDATA"] = str(tmp_path / "appdata")
+    from PySide6.QtWidgets import QApplication
+    app = QApplication.instance() or QApplication([])
+    from clarinet_tone.ui import MainWindow
+    s = C.Settings(base_dir=str(tmp_path / "Clarinet tone"))
+    C.save_reeds(s.reeds_file, [C.Reed(started="2026-08-04", dots=1)])
+    rescans = []
+    w = MainWindow(s, mic_finder=lambda: MicChoice(0, "Blue Snowball", "MME", True), recorder_cls=FakeRecorder,
+                   device_refresher=lambda: rescans.append(1), headset_finder=lambda hint: None,
+                   metronome_cls=FakeMetronome, report_opener=lambda p: None)
+    assert "not found" in w.metro_label.text()
+    w.start(); pump(app, 0.3)
+    assert rescans and w.rec.recording and "without the click" in w.metro_label.text()
+    w.stop(); w.close()

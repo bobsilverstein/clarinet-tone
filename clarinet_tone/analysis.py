@@ -297,7 +297,7 @@ def exercise_of(wav: Path, meta: dict) -> str:
     if meta.get("exercise"):
         return meta["exercise"]
     name = wav.stem.lower()
-    for key in ("long-tone-chalumeau", "long-tone-clarion", "long-tone", "legato", "register"):
+    for key in ("long-tone-chalumeau", "long-tone-clarion", "long-tone", "legato", "register", "tuning"):
         if key in name:
             return key
     return "other"
@@ -382,6 +382,8 @@ def analyze(wav: Path, progress=None) -> dict:
         "microphone": meta.get("microphone", ""),
         "hearing_aids": hearing_aids_of(wav, meta, taken),
         "test_description": meta.get("test_description", ""),
+        "reed_age_days": meta.get("reed_age_days"),
+        "equipment": meta.get("equipment") or {},
         "notes": notes,
         "summary": summarize(notes),
     }

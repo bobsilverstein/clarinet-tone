@@ -83,6 +83,12 @@ class Settings:
     level_red_db: float = -2.0
     shortcut_made: bool = False
     hearing_aids: bool = False          # last setting of the hearing-aids switch
+    metronome_on: bool = True           # click in the Bluetooth headset during takes
+    headset_hint: str = "openrun"       # part of the headset's name in Windows
+    equipment_on: bool = False          # record mouthpiece, ligature, barrel with each take
+    mouthpiece: str = ""
+    ligature: str = ""
+    barrel: str = ""
 
     @property
     def recordings_dir(self) -> Path:
@@ -123,21 +129,27 @@ class Settings:
 class Exercise:
     key: str          # used in file names
     title: str
-    tempo: str        # what the metronome should be set to
+    tempo: str        # what the metronome is set to, in words
+    bpm: int = 0      # 0 = no metronome
+    beats: int = 0    # beats per bar; the first beat of each bar is accented
 
 
 def long_tone_for(day: date) -> Exercise:
     if day.day % 2:
-        return Exercise("long-tone-chalumeau", "Long tones, chalumeau (odd day)", "88 bpm, 4/4")
-    return Exercise("long-tone-clarion", "Long tones, clarion (even day)", "88 bpm, 4/4")
+        return Exercise("long-tone-chalumeau", "Long tones, chalumeau (odd day)", "88 bpm, 4/4", 88, 4)
+    return Exercise("long-tone-clarion", "Long tones, clarion (even day)", "88 bpm, 4/4", 88, 4)
 
 
-LEGATO = Exercise("legato", "Legato warm-up", "88 bpm, 2/4")
-REGISTER = Exercise("register", "Register key / embouchure", "60 bpm, 2/4")
+LEGATO = Exercise("legato", "Legato warm-up", "88 bpm, 2/4", 88, 2)
+REGISTER = Exercise("register", "Register key / embouchure", "60 bpm, 2/4", 60, 2)
+TUNING = Exercise("tuning", "Tuning pattern", "60 bpm, 4/4", 60, 4)
+
+# Written notes of the tuning pattern, slurred, in order (Bob, 2026-11-10).
+TUNING_PATTERN = ["C4", "G5", "C5", "C4", "G5", "E6"]
 
 
 def exercises_for(day: date) -> list[Exercise]:
-    return [long_tone_for(day), LEGATO, REGISTER]
+    return [long_tone_for(day), LEGATO, REGISTER, TUNING]
 
 
 TEST = Exercise("test", "Test", "whatever the test needs")
@@ -171,6 +183,10 @@ class Reed:
     def label(self) -> str:
         d = date.fromisoformat(self.started)
         return f"{d.month:02d}{d.day:02d}-{self.dots}"
+
+    def age_days(self, today: date | None = None) -> int:
+        """Days since the date written on the reed."""
+        return ((today or date.today()) - date.fromisoformat(self.started)).days
 
     @property
     def display(self) -> str:

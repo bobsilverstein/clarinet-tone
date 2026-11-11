@@ -99,7 +99,37 @@ TITLES = {
     "long-tone": "Long tones",
     "legato": "Legato warm-up",
     "register": "Register key / embouchure",
+    "tuning": "Tuning pattern",
 }
+
+
+def equipment_text(result: dict) -> str:
+    """ "Mouthpiece X, ligature Y, barrel Z", or "" when not recorded."""
+    eq = result.get("equipment") or {}
+    parts = [f"{k} {eq[k]}" for k in ("mouthpiece", "ligature", "barrel") if eq.get(k)]
+    t = ", ".join(parts)
+    return t[:1].upper() + t[1:]
+
+
+def _pattern_section(result: dict) -> str:
+    """For the tuning pattern: did each target note sound, and how was it."""
+    from .config import TUNING_PATTERN
+    by = {}
+    for n in result["notes"]:
+        by.setdefault(n["written"], []).append(n)
+    rows = []
+    for name in dict.fromkeys(TUNING_PATTERN):          # each note once, in pattern order
+        g = by.get(name, [])
+        if g:
+            c = float(np.median([x["cents"] for x in g]))
+            w = float(np.median([x["wobble_cents"] for x in g]))
+            rows.append(f"<tr><td>{name}</td><td>yes ({len(g)}×)</td><td class=num>{c:+.1f}</td>"
+                        f"<td class=num>{w:.2f}</td></tr>")
+        else:
+            rows.append(f"<tr><td>{name}</td><td><b>did not sound</b></td><td class=num>–</td><td class=num>–</td></tr>")
+    return ("<h2>Pattern check</h2><p class=muted>Pattern: " + ", ".join(TUNING_PATTERN) + "</p>"
+            "<table><tr><th>Note</th><th>Sounded</th><th class=num>Pitch, cents</th><th class=num>Wobble, cents</th></tr>"
+            + "".join(rows) + "</table>")
 
 
 def _bar_chart(rows, key, title, unit, signed):
@@ -197,6 +227,12 @@ def build(result: dict, folder: Path) -> str:
     mic = f" &nbsp;·&nbsp; {html.escape(result['microphone'])}" if result.get("microphone") else ""
     ha = result.get("hearing_aids")
     mic += " &nbsp;·&nbsp; Hearing aids " + ("on" if ha else "off" if ha is False else "not recorded")
+    if result.get("reed_age_days") is not None:
+        sub += f" &nbsp;·&nbsp; Reed age {result['reed_age_days']} days"
+    eq = equipment_text(result)
+    if eq:
+        mic += f"<br>Equipment: {html.escape(eq)}"
+    pattern = _pattern_section(result) if result.get("exercise") == "tuning" else ""
     if test:
         intro = ("<p class=note>This is a test take.  Each value is the duration-weighted median over all held notes.  "
                  "Test takes never enter your exercise history or comparisons.</p>")
@@ -229,6 +265,7 @@ th{{font-size:12pt;color:{MUTED};font-weight:600}} .num{{text-align:right;white-
 <table>{cols}
 {''.join(rows)}</table>
 <p class=muted>Average pitch today: {s.get('cents_signed', float('nan')):+.1f} cents (negative = flat).</p>
+{pattern}
 
 <h2>By note</h2>
 {_bar_chart(bn, 'cents', 'Pitch by written note (negative = flat)', 'cents', True)}
@@ -238,6 +275,58 @@ th{{font-size:12pt;color:{MUTED};font-weight:600}} .num{{text-align:right;white-
 <th class=num>Sag, cents</th><th class=num>Unsteadiness, %</th><th class=num>Brightness</th><th class=num>Buzz</th><th class=num>H/N, dB</th></tr>
 {note_rows}</table>
 <p class=muted>Note names are written pitch for B-flat clarinet.  Values per note are medians over every time you played it.</p>
+</body></html>"""
+
+
+def build_compare(results: list[dict]) -> str:
+    """Side-by-side table of several takes: one column per take, one row per measure."""
+    def when(r):
+        try:
+            return datetime.fromisoformat(r["taken"]).strftime("%m/%d/%Y %I:%M %p")
+        except Exception:
+            return r.get("taken", "")
+    head = "".join(
+        f"<th class=num>{html.escape(when(r))}<div class=muted>"
+        f"{html.escape(TITLES.get(r.get('exercise'), r.get('exercise_title') or r.get('exercise', '')))}<br>"
+        f"Reed {html.escape(r.get('reed', ''))}"
+        + (f", {r['reed_age_days']} days" if r.get("reed_age_days") is not None else "")
+        + (f"<br>{html.escape(equipment_text(r))}" if equipment_text(r) else "")
+        + "</div></th>" for r in results)
+    rows = []
+    for key, label, unit, better in MEASURES:
+        cells = "".join(f"<td class=num>{_fmtu(r.get('summary', {}).get(key), key)}</td>" for r in results)
+        rows.append(f"<tr><td><b>{label}</b></td>{cells}</tr>")
+    # by note: pitch and brightness for every note any take played
+    names = {}
+    for r in results:
+        for n in r.get("notes", []):
+            names[n["written"]] = n["midi_sounding"]
+    note_rows = []
+    for name in sorted(names, key=names.get):
+        cells = ""
+        for r in results:
+            g = [n for n in r.get("notes", []) if n["written"] == name]
+            if g:
+                cells += (f"<td class=num>{np.median([n['cents'] for n in g]):+.1f} cents"
+                          f"<div class=muted>brightness {np.median([n['brightness'] for n in g]):.2f}</div></td>")
+            else:
+                cells += "<td class=num>–</td>"
+        note_rows.append(f"<tr><td>{name}</td>{cells}</tr>")
+    return f"""<!DOCTYPE html>
+<html lang=en><head><meta charset=utf-8><title>Comparison of {len(results)} takes</title>
+<style>
+body{{font-family:"Segoe UI",Arial,sans-serif;font-size:14pt;color:{INK};margin:24px auto;max-width:1200px;padding:0 16px}}
+h1{{font-size:22pt;margin:0}} h2{{font-size:16pt;margin-top:28px}}
+.muted{{color:{MUTED};font-size:11pt;font-weight:normal}}
+table{{border-collapse:collapse;width:100%}} th,td{{border-bottom:1px solid {GRID};padding:6px 8px;vertical-align:top;text-align:left}}
+th{{font-size:12pt;font-weight:700}} .num{{text-align:right;white-space:nowrap}}
+</style></head><body>
+<h1>Comparison of {len(results)} takes</h1>
+<p class=muted>Each value is the duration-weighted median over the take's held notes.</p>
+<table><tr><th>Measure</th>{head}</tr>{''.join(rows)}</table>
+<h2>By note</h2>
+<table><tr><th>Note</th>{head}</tr>{''.join(note_rows)}</table>
+<p class=muted>Note names are written pitch for B-flat clarinet.</p>
 </body></html>"""
 
 
