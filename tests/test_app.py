@@ -416,7 +416,7 @@ def test_metronome_clicks():
     onsets = sorted(set(round(i / sr, 2) for i in starts))
     assert onsets == [0.0, 1.0, 2.0, 3.0, 4.0], onsets
     peak = lambda t: np.abs(y[int(t * sr): int(t * sr) + 1200]).max()
-    assert peak(0) > peak(1) * 1.1 and peak(2) > peak(3) * 1.1
+    assert peak(0) > peak(1) * 2.5 and peak(2) > peak(3) * 2.5
     m.pause(True); assert not m.render(512).any()
 
 
@@ -429,7 +429,7 @@ def test_new_features(tmp_path):
     from clarinet_tone.ui import MainWindow, ReportsDialog
     from clarinet_tone import analysis as AN, report as RP
     s = C.Settings(base_dir=str(tmp_path / "Clarinet tone"), mouthpiece="Vandoren M13",
-                   barrel="Backun 66", equipment_on=True)
+                   barrel="Backun 66", equipment_on=True, headset="shokz")
     C.save_reeds(s.reeds_file, [C.Reed(started="2026-08-04", dots=1)])
     opened = []
     FakeMetronome.log = []
@@ -441,7 +441,11 @@ def test_new_features(tmp_path):
     assert w.age_label.text() == f"Age: {(date.today() - date(2026, 8, 4)).days} days"
     assert "Vandoren M13" in w.equip_label.text() and not w.equip_label.isHidden()
     assert [w.ex_group.button(i).text() for i in range(4)][3] == "Tuning pattern"
-    w.start(); pump(app, 0.3); w.toggle_pause(); w.toggle_pause(); pump(app, 0.3); w.stop()
+    w.start(); pump(app, 0.3); w.toggle_pause()
+    assert "Resume" in w.btn_pause.text() and "#2e7d32" in w.btn_pause.styleSheet()
+    w.toggle_pause()
+    assert "Pause" in w.btn_pause.text() and "#ffb300" in w.btn_pause.styleSheet()
+    pump(app, 0.3); w.stop()
     assert FakeMetronome.log == [("start", 88, 4), ("pause", True), ("pause", False), ("stop",)], FakeMetronome.log
     wav = w.last_saved[0]
     assert wait_for(app, lambda: opened, 20) and opened[0] == RP.report_path(wav)
@@ -482,13 +486,13 @@ def test_headset_not_found(tmp_path):
     from PySide6.QtWidgets import QApplication
     app = QApplication.instance() or QApplication([])
     from clarinet_tone.ui import MainWindow
-    s = C.Settings(base_dir=str(tmp_path / "Clarinet tone"))
+    s = C.Settings(base_dir=str(tmp_path / "Clarinet tone"), headset="sony")
     C.save_reeds(s.reeds_file, [C.Reed(started="2026-08-04", dots=1)])
     rescans = []
     w = MainWindow(s, mic_finder=lambda: MicChoice(0, "Blue Snowball", "MME", True), recorder_cls=FakeRecorder,
                    device_refresher=lambda: rescans.append(1), headset_finder=lambda hint: None,
                    metronome_cls=FakeMetronome, report_opener=lambda p: None)
-    assert "not found" in w.metro_label.text()
+    assert "Sony not found" in w.metro_label.text()
     w.start(); pump(app, 0.3)
     assert rescans and w.rec.recording and "without the click" in w.metro_label.text()
     w.stop(); w.close()
@@ -503,8 +507,35 @@ def test_headset_choice(monkeypatch):
     fake = types.SimpleNamespace(query_hostapis=lambda: [{"name": "MME"}],
                                  query_devices=lambda: devs, check_output_settings=lambda **k: None)
     monkeypatch.setattr(MT, "_sd", lambda: fake)
-    hints = C.Settings().headsets
-    assert MT.find_headset(hints) == (3, "Headphones (OpenRun by Shokz)")
-    devs.pop()                                     # Shokz off: the Sony, stereo profile
-    assert MT.find_headset(hints) == (2, "Headphones (WH-CH720N)")
-    assert C.TUNING.bpm == 0
+    assert MT.find_headset(C.HEADSETS["shokz"][1]) == (3, "Headphones (OpenRun by Shokz)")
+    assert MT.find_headset(C.HEADSETS["sony"][1]) == (2, "Headphones (WH-CH720N)")   # stereo profile, not calls
+    devs.pop()
+    assert MT.find_headset(C.HEADSETS["shokz"][1]) is None                           # no switching to the Sony
+    assert C.TUNING.bpm == 0 and C.Settings().headset == ""
+
+
+def test_headset_buttons(tmp_path):
+    os.environ["APPDATA"] = str(tmp_path / "appdata")
+    from PySide6.QtWidgets import QApplication
+    app = QApplication.instance() or QApplication([])
+    from clarinet_tone.ui import MainWindow
+    s = C.Settings(base_dir=str(tmp_path / "Clarinet tone"))
+    C.save_reeds(s.reeds_file, [C.Reed(started="2026-08-04", dots=1)])
+    names = {"openrun": (5, "Headphones (OpenRun by Shokz)"), "wh-ch720n": (7, "Headphones (WH-CH720N)")}
+    w = MainWindow(s, mic_finder=lambda: MicChoice(0, "Blue Snowball", "MME", True), recorder_cls=FakeRecorder,
+                   headset_finder=names.get, metronome_cls=FakeMetronome, report_opener=lambda p: None)
+    assert "Pick the headset" in w.metro_label.text() and w.headset_group.checkedId() == -1
+    w.headset_group.button(1).click()
+    assert C.Settings.load().headset == "sony" and "WH-CH720N" in w.metro_label.text()
+    w.headset_group.button(0).click()
+    assert "OpenRun" in w.metro_label.text() and w.metro.device == 5
+    w.close()
+
+
+def test_four_four_pattern():
+    from clarinet_tone import metronome as MT
+    s = [MT.sound_for(k, 4) for k in range(8)]
+    amp = [np.abs(x).max() for x in s]
+    assert s[0] is MT.ACCENT and s[2] is MT.MIDDLE and s[1] is s[3] is MT.BEAT and s[4] is MT.ACCENT
+    assert amp[0] > amp[2] > amp[1] == amp[3]
+    assert [MT.sound_for(k, 2) is MT.ACCENT for k in range(4)] == [True, False, True, False]

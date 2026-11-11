@@ -662,6 +662,21 @@ class MainWindow(QMainWindow):
             hm.addWidget(b)
         self.metro_group.button(1 if self.s.metronome_on else 0).setChecked(True)
         self.metro_group.idClicked.connect(self.set_metronome)
+        sep = QLabel("Headset:")
+        sep.setStyleSheet("margin-left:14px")
+        hm.addWidget(sep)
+        self.headset_group = QButtonGroup(self)
+        self.headset_group.setExclusive(True)
+        self.headset_keys = list(C.HEADSETS)
+        for i, key in enumerate(self.headset_keys):
+            b = QPushButton(C.HEADSETS[key][0])
+            b.setCheckable(True)
+            b.setMinimumWidth(80)
+            b.setStyleSheet("QPushButton:checked{background:#1565c0;color:white;font-weight:bold}")
+            self.headset_group.addButton(b, i)
+            hm.addWidget(b)
+            b.setChecked(key == self.s.headset)
+        self.headset_group.idClicked.connect(self.set_headset)
         self.tempo_label = QLabel()
         self.tempo_label.setStyleSheet("margin-left:14px")
         hm.addWidget(self.tempo_label)
@@ -690,8 +705,14 @@ class MainWindow(QMainWindow):
         for b in (self.btn_rec, self.btn_pause, self.btn_stop, self.btn_discard):
             b.setMinimumHeight(64)
             hc.addWidget(b)
-        self.btn_rec.setStyleSheet("QPushButton{background:#c62828;color:white;font-weight:bold}"
-                                   "QPushButton:disabled{background:#999}")
+        off = "QPushButton:disabled{background:#e6e6e6;color:#9e9e9e;border:1px solid #cfcfcf}"
+        self.btn_rec.setStyleSheet("QPushButton{background:#c62828;color:white;font-weight:bold;border-radius:6px}" + off)
+        self.btn_stop.setStyleSheet("QPushButton{background:#1565c0;color:white;font-weight:bold;border-radius:6px}" + off)
+        self.btn_discard.setStyleSheet("QPushButton{background:white;color:#b71c1c;font-weight:bold;"
+                                       "border:3px solid #b71c1c;border-radius:6px}" + off)
+        self.PAUSE_STYLE = ("QPushButton{background:#ffb300;color:black;font-weight:bold;border-radius:6px}" + off)
+        self.RESUME_STYLE = ("QPushButton{background:#2e7d32;color:white;font-weight:bold;border-radius:6px}" + off)
+        self.btn_pause.setStyleSheet(self.PAUSE_STYLE)
         self.btn_rec.clicked.connect(self.start)
         self.btn_pause.clicked.connect(self.toggle_pause)
         self.btn_stop.clicked.connect(self.stop)
@@ -948,13 +969,22 @@ class MainWindow(QMainWindow):
         self.s.save()
         self.refresh_labels()
 
+    def set_headset(self, i: int):
+        self.s.headset = self.headset_keys[i]
+        self.s.save()
+        self.find_metronome()
+
+    def headset_label(self) -> str:
+        return C.HEADSETS.get(self.s.headset, ("", ""))[0]
+
     def find_metronome(self, rescan: bool = False) -> bool:
         """Look for the headset.  With rescan, Windows' device list is read again
         (only between takes: it reopens the microphone)."""
         if rescan and not (self.rec and self.rec.recording):
             self.connect_mic()          # re-reads the devices and reopens the mic
+        hint = C.HEADSETS.get(self.s.headset, ("", ""))[1]
         try:
-            found = self.headset_finder(self.s.headsets)
+            found = self.headset_finder(hint) if hint else None
         except Exception:
             found = None
         if found is None:
@@ -975,11 +1005,14 @@ class MainWindow(QMainWindow):
         elif not self.s.metronome_on:
             self.metro_label.setText("Metronome off: use your own.")
             self.metro_label.setStyleSheet("color:#444")
+        elif not self.s.headset:
+            self.metro_label.setText("Pick the headset for the click: Shokz or Sony.")
+            self.metro_label.setStyleSheet("color:#b8860b;font-weight:bold")
         elif self.metro:
             self.metro_label.setText(f"Click goes to {self.metro.name}; it starts with Record.")
             self.metro_label.setStyleSheet("color:#2e7d32")
         else:
-            self.metro_label.setText("Headset not found yet.  Turn on the Shokz or the Sony; the program "
+            self.metro_label.setText(f"{self.headset_label()} not found yet.  Turn it on; the program "
                                      "looks again when you press Record.")
             self.metro_label.setStyleSheet("color:#b8860b")
 
@@ -1035,21 +1068,22 @@ class MainWindow(QMainWindow):
             b.setEnabled(not recording)
         for b in self.ha_group.buttons():
             b.setEnabled(not recording)
-        for b in self.metro_group.buttons():
+        for b in self.metro_group.buttons() + self.headset_group.buttons():
             b.setEnabled(not recording)
         self.test_desc.setEnabled(not recording)
         self.reed_box.setEnabled(not recording)
         for b in self.dots_group.buttons():
             b.setEnabled(not recording and self.current_reed() is not None)
-        if recording:
-            self.btn_pause.setText("▶  Resume" if self.rec.paused else "❚❚  Pause")
+        paused = recording and self.rec.paused
+        self.btn_pause.setText("▶  Resume" if paused else "❚❚  Pause")
+        self.btn_pause.setStyleSheet(self.RESUME_STYLE if paused else self.PAUSE_STYLE)
 
     # ------------------------------------------------------------ actions
     def start(self):
         r, ex = self.current_reed(), self.exercise()
         if not (self.rec and r):
             return
-        click = self.s.metronome_on and ex.bpm > 0
+        click = self.s.metronome_on and ex.bpm > 0 and bool(self.s.headset)
         if click and not self.find_metronome():
             self.find_metronome(rescan=True)        # the headset may have been turned on since
             if not (self.rec and self.mic_ok):
@@ -1084,8 +1118,8 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 self.show_metronome(f"Metronome could not start ({e}).  Recording anyway.")
         elif click:
-            self.show_metronome("Headset not found: recording without the click.  "
-                                "Turn on a headset before the next take.")
+            self.show_metronome(f"{self.headset_label()} not found: recording without the click.  "
+                                "Turn it on, or pick the other headset, before the next take.")
         self.file_label.setText(f"Recording to: {path.name}")
         self.last_saved = None
         self.status.setText("")

@@ -57,8 +57,22 @@ def _click(freq: float, amp: float, ms: float = 25.0) -> np.ndarray:
     return (amp * env * np.sin(2 * np.pi * freq * t)).astype(np.float32)
 
 
-ACCENT = _click(1500.0, 0.72)     # slight accent: a major third higher, about 1.6 dB louder
-BEAT = _click(1200.0, 0.6)
+# Bob's pattern (2026-11-10): beat 1 strong and highest; beats 2 and 4 much quieter;
+# beat 3 a bit louder and higher than 2 and 4, but below beat 1.
+FULL = 0.9
+ACCENT = _click(2000.0, FULL)                       # beat 1
+MIDDLE = _click(1600.0, FULL * 10 ** (-4 / 20))     # beat 3 of 4/4: 4 dB below beat 1
+BEAT = _click(1200.0, FULL * 10 ** (-9 / 20))       # beats 2 and 4: 9 dB below beat 1
+
+
+def sound_for(k: int, beats: int) -> np.ndarray:
+    """Click for beat number k (0 = first beat of the take)."""
+    b = k % beats
+    if b == 0:
+        return ACCENT
+    if beats == 4 and b == 2:
+        return MIDDLE
+    return BEAT
 
 
 class Metronome:
@@ -115,7 +129,7 @@ class Metronome:
                 b0 = int(round(k * period))
                 if b0 >= end:
                     break
-                c = ACCENT if k % self.beats == 0 else BEAT
+                c = sound_for(k, self.beats)
                 lo, hi = max(start, b0), min(end, b0 + len(c))
                 if hi > lo:
                     out[lo - start:hi - start] += c[lo - b0:hi - b0]
