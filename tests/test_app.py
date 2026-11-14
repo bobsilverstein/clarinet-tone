@@ -35,7 +35,8 @@ class FakeRecorder(Recorder):
         super().close(); self._run = False
 
 def test_names():
-    assert C.recording_name(datetime(2026,11,5,18,45), "0804-1", "register") == "2026-11-05_1845_reed-0804-1_register.wav"
+    assert C.recording_name(datetime(2026,11,5,18,45), "0804-1", "register") == "2026-11-05_1845_register_reed-1.wav"
+    assert C.recording_name(datetime(2026,11,12,21,0), "1106-3", "long-tone-clarion") == "2026-11-12_2100_long-tone-clarion_reed-3.wav"
     assert C.long_tone_for(date(2026,11,5)).key == "long-tone-chalumeau"
     assert C.long_tone_for(date(2026,11,6)).key == "long-tone-clarion"
     r = C.Reed(started="2026-08-04", dots=1)
@@ -333,7 +334,7 @@ def test_build18_features(tmp_path, monkeypatch):
     w.ha_group.button(0).click()
     w.start(); pump(app, 2.2); w.stop()
     tw = w.last_saved[0]
-    assert tw.parent == s.tests_dir and tw.name.endswith("_test-tuner-check.wav"), tw
+    assert tw.parent == s.tests_dir and "_test-tuner-check_reed-" in tw.name, tw
     assert w.is_test()                       # stays on Test
     assert wait_for(app, lambda: RP.report_path(tw).exists() and not w.btn_open_report.isHidden()
                     and w.last_report == RP.report_path(tw), 20)
@@ -462,7 +463,7 @@ def test_new_features(tmp_path):
     w.start(); pump(app, 2.2); w.stop()
     assert FakeMetronome.log == [("stop",)]
     tw = w.last_saved[0]
-    assert tw.name.endswith("_tuning.wav")
+    assert "_tuning_reed-" in tw.name
     assert wait_for(app, lambda: len(opened) == 2, 20)
     tpage = RP.report_path(tw).read_text(encoding="utf-8")
     assert "Pattern check" in tpage and "did not sound" in tpage and "<td>C4</td><td>yes" in tpage
