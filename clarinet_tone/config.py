@@ -246,8 +246,11 @@ _SAFE = re.compile(r"[^A-Za-z0-9-]")
 
 
 def recording_name(start: datetime, reed_label: str, exercise_key: str) -> str:
-    reed = _SAFE.sub("", reed_label) or "unknown"
-    return f"{start:%Y-%m-%d_%H%M}_reed-{reed}_{exercise_key}.wav"
+    """Date, start time, exercise, and the reed's dot count, e.g.
+    2026-11-12_2100_long-tone-clarion_reed-3.wav.  The full reed (date and
+    dots) lives in the take's .json record, which the program always uses."""
+    dots = _SAFE.sub("", reed_label.rsplit("-", 1)[-1]) or "unknown"
+    return f"{start:%Y-%m-%d_%H%M}_{exercise_key}_reed-{dots}.wav"
 
 
 def unique_path(folder: Path, name: str) -> Path:
