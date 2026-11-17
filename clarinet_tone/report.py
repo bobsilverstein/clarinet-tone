@@ -12,14 +12,46 @@ from .analysis import MEASURES, history, is_test
 INK, MUTED, GRID, BAR, NEG = "#1f2328", "#5f6670", "#e4e7eb", "#2f6fbf", "#c2552d"
 
 EXPLAIN = {
-    "cents_abs": "How far each note sits from equal temperament (A = 440 Hz), ignoring sharp or flat.  100 cents = one half step.",
+    "cents_abs": "How far each note sits from equal temperament (A = 440 Hz), counting sharp and flat alike.  "
+                 "100 cents = one half step.",
     "wobble_cents": "How much the pitch wavers while you hold the note: the standard deviation of the pitch, in cents.",
-    "sag_cents": "Pitch change from the first third to the last third of the note, in cents.  Negative means the pitch dropped.",
-    "steadiness_pct": "Coefficient of variation of the sound amplitude (SD ÷ mean), on raw amplitude, not decibels.",
-    "brightness": "The average harmonic number, with each harmonic counted in proportion to its strength.  1 would mean only the fundamental; higher means more energy in the upper harmonics, a brighter sound.",
-    "buzz": "Size of the loudness flutter at 20 to 150 times per second, the rate the ear hears as a rattle or buzz, as a fraction of the average loudness.  0 means none.",
-    "hnr_db": "Power in the harmonics versus the hiss between them, as a ratio in decibels.  Higher means cleaner.",
+    "sag_cents": "Pitch change from the first third to the last third of each held note, in cents.",
+    "steadiness_pct": "How much the loudness rises and falls while you hold the note: the standard deviation of "
+                      "the amplitude divided by its average (coefficient of variation).",
+    "brightness": "The average harmonic number, with each harmonic counted in proportion to its strength.  "
+                  "1 would mean only the fundamental (a pure tone).",
+    "buzz": "Size of the loudness flutter at 20 to 150 times per second, the rate the ear hears as a rattle or buzz, "
+            "as a fraction of the average loudness.",
+    "hnr_db": "Power in the harmonics versus the hiss between them, as a ratio in decibels.",
 }
+
+# How to read each number: which way is better, and what a given size means.
+READ = {
+    "cents_abs": "<b>Lower is better.</b>  0 means every note sat exactly in tune.  The live pitch meter shows "
+                 "green within 10 cents, amber within 25, red beyond.",
+    "wobble_cents": "<b>Lower is better.</b>  0 means a perfectly steady pitch.  2 cents means the pitch stayed "
+                    "within 2 cents of its average about two-thirds of the time; 10 means it wandered five times as far.",
+    "sag_cents": "<b>Closer to 0 is better, on either side.</b>  A negative number means the pitch dropped (went flat) "
+                 "as you held the note; a positive number means it rose (went sharp).  So &minus;10 is worse than "
+                 "&minus;2, and +5 is as far off as &minus;5.  Drops on some notes and rises on others can cancel "
+                 "here; the by-note table shows each note.",
+    "steadiness_pct": "<b>Lower is better.</b>  0 % means perfectly even loudness.  5 % means the loudness swayed "
+                      "about 5 % above and below its average.",
+    "brightness": "<b>Neither higher nor lower is better; your ear decides.</b>  Higher means more energy in the "
+                  "upper harmonics, a brighter or edgier sound; lower means a darker, rounder sound.  Low notes "
+                  "always read much higher than clarion notes, so a session total depends on which notes the "
+                  "exercise holds.  Compare the same note from day to day.",
+    "buzz": "<b>Lower is better.</b>  0 means no buzz.  0.010 means the flutter equals 1 % of the average "
+            "loudness; 0.020 is twice as much.",
+    "hnr_db": "<b>Higher is better (cleaner, less hiss).</b>  Each 3 dB more means the harmonics stand about "
+              "twice as far above the hiss; 10 dB more means 10 times as far.",
+}
+
+# Which way is better: "lower", "higher", "zero" (closer to 0 either way), or None (no judgment).
+BETTER = {key: better for key, _, _, better in MEASURES}
+BETTER["sag_cents"] = "zero"
+BETTER_TAG = {"lower": "lower is better", "higher": "higher is better", "zero": "closer to 0 is better",
+              None: "your ear decides"}
 
 
 UNITS = {key: unit for key, _, unit, _ in MEASURES}
@@ -63,7 +95,17 @@ def _compare_cell(today, st, key):
     if today is not None and n >= 3 and np.isfinite(sd) and sd > 0:
         z = (today - mean) / sd
         if abs(z) >= 2:
-            flag = f" <b>{'▲ higher' if z > 0 else '▼ lower'}</b> <span class=muted>({z:+.1f} SD)</span>"
+            b = BETTER.get(key)
+            if b == "lower":
+                good = z < 0
+            elif b == "higher":
+                good = z > 0
+            elif b == "zero":
+                good = abs(today) < abs(mean)
+            else:
+                good = None
+            word = "" if good is None else (" <span class=good>better</span>" if good else " <span class=bad>worse</span>")
+            flag = (f"<div><b>{'▲ higher' if z > 0 else '▼ lower'}</b>{word} <span class=muted>({z:+.1f} SD)</span></div>")
     return f"<td class=num>{txt}{flag}</td>"
 
 
@@ -204,9 +246,11 @@ def build(result: dict, folder: Path) -> str:
         today = s.get(key)
         cmp = "" if test else (_compare_cell(today, _stats(same, key), key)
                                + _compare_cell(today, _stats(alls, key), key))
+        ncol = 2 if test else 4
         rows.append(
-            f"<tr><td><b>{label}</b><div class=muted>{EXPLAIN[key]}</div></td>"
-            f"<td class='num today'>{_fmtu(today, key)}</td>" + cmp + "</tr>")
+            f"<tr class=mrow><td class=mname><b>{label}</b></td>"
+            f"<td class='num today'>{_fmtu(today, key)}</td>" + cmp + "</tr>"
+            f"<tr class=drow><td colspan={ncol}>{EXPLAIN[key]}<br>{READ[key]}</td></tr>")
 
     bn = _by_note(result["notes"])
     note_rows = "".join(
@@ -253,6 +297,9 @@ h1{{font-size:22pt;margin:0}} h2{{font-size:16pt;margin-top:28px}}
 table{{border-collapse:collapse;width:100%}} th,td{{border-bottom:1px solid {GRID};padding:6px 8px;vertical-align:top;text-align:left}}
 th{{font-size:12pt;color:{MUTED};font-weight:600}} .num{{text-align:right;white-space:nowrap}}
 .today{{font-weight:700;font-size:15pt}}
+tr.mrow td{{border-bottom:none;padding-bottom:2px}} tr.drow td{{font-size:12pt;color:{MUTED};padding:0 8px 12px 8px}}
+tr.drow b{{color:{INK}}} .mname{{white-space:nowrap}}
+.good{{color:#1a7f37;font-weight:700}} .bad{{color:#c2552d;font-weight:700}}
 .chart{{width:100%;height:auto;margin-top:8px}} .ct{{font-size:15px;font-weight:600;fill:{INK}}} .ax{{font-size:12px;fill:{MUTED}}}
 .bar:hover rect+rect{{opacity:.75}}
 .note{{background:#f4f6f8;padding:10px 14px;border-radius:6px;font-size:12pt}}
@@ -274,7 +321,9 @@ th{{font-size:12pt;color:{MUTED};font-weight:600}} .num{{text-align:right;white-
 <table><tr><th>Note</th><th class=num>Times</th><th class=num>Pitch, cents</th><th class=num>Wobble, cents</th>
 <th class=num>Sag, cents</th><th class=num>Unsteadiness, %</th><th class=num>Brightness</th><th class=num>Buzz</th><th class=num>H/N, dB</th></tr>
 {note_rows}</table>
-<p class=muted>Note names are written pitch for B-flat clarinet.  Values per note are medians over every time you played it.</p>
+<p class=muted>Note names are written pitch for B-flat clarinet.  Values per note are medians over every time you played it.<br>
+Pitch: closer to 0 is better; negative = flat, positive = sharp.  Sag: closer to 0 is better; negative = dropped.
+Wobble, unsteadiness, and buzz: lower is better.  H/N: higher is better.  Brightness: your ear decides.</p>
 </body></html>"""
 
 
